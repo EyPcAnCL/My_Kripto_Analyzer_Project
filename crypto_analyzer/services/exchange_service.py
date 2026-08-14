@@ -1,6 +1,7 @@
 import ccxt
 import pandas as pd
 import logging
+import time
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -24,8 +25,12 @@ class ExchangeService:
         Belirtilen parite için OHLCV (Mum) verilerini çeker ve DataFrame döndürür.
         """
         try:
-            logger.info(f"{symbol} için {timeframe} verileri çekiliyor...")
+            logger.info(f"{symbol} için {timeframe} verileri çekiliyor (Limit: {limit})...")
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            
+            if not ohlcv:
+                logger.warning(f"{symbol} için boş veri döndü.")
+                return pd.DataFrame()
             
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -34,3 +39,56 @@ class ExchangeService:
         except Exception as e:
             logger.error(f"Veri çekilirken hata oluştu ({symbol}): {e}")
             return pd.DataFrame()
+
+    def fetch_historical_ohlcv(self, symbol: str, timeframe: str = '4h', total_candles: int = 500) -> pd.DataFrame:
+        """
+        Geriye dönük daha büyük hacimli (Backtest için 500-2000+) mum verisi çeker.
+        Gerektiğinde sayfalama (pagination) yaparak verileri birleştirir.
+        """
+        try:
+            if total_candles <= 500:
+                return self.fetch_ohlcv(symbol, timeframe=timeframe, limit=total_candles)
+            
+            all_ohlcv = []
+            candles_per_request = 500
+            current_limit = min(candles_per_request, total_candles)
+            
+            # İlk partiyi çek
+            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=current_limit)
+            if not ohlcv:
+                return pd.DataFrame()
+            
+            all_ohlcv.extend(ohlcv)
+            
+            # Daha fazla gerekliyse geriye dönük zaman damgalarıyla çek
+            while len(all_ohlcv) < total_candles:
+                oldest_timestamp = all_ohlcv[0][0]
+                # Zaman dilimine göre milisaniye tahmini
+                tf_ms = self.exchange.parse_timeframe(timeframe) * 1000
+                since = oldest_timestamp - (candles_per_request * tf_ms)
+                
+                earlier_ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=candles_per_request)
+                if not earlier_ohlcv or earlier_ohlcv[0][0] >= oldest_timestamp:
+                    break
+                
+                # Yeni eski verileri başa ekle (çakışmaları önleyerek)
+                unique_earlier = [c for c in earlier_ohlcv if c[0] < oldest_timestamp]
+                if not unique_earlier:
+                    break
+                
+                all_ohlcv = unique_earlier + all_ohlcv
+                time.sleep(self.exchange.rateLimit / 1000.0)
+            
+            df = pd.DataFrame(all_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df = df.drop_duplicates(subset=['timestamp']).sort_values('timestamp').reset_index(drop=True)
+            
+            # İstenen adede sınırla
+            if len(df) > total_candles:
+                df = df.iloc[-total_candles:].reset_index(drop=True)
+                
+            return df
+        except Exception as e:
+            logger.error(f"Geçmiş veri çekilirken hata oluştu ({symbol}): {e}")
+            # Hata durumunda standart metod ile çekmeyi dene
+            return self.fetch_ohlcv(symbol, timeframe=timeframe, limit=min(total_candles, 500))

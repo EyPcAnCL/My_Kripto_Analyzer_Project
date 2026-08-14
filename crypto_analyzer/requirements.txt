@@ -4,3 +4,5 @@ ta>=0.11.0
 SQLAlchemy>=2.0.0
 python-dotenv>=1.0.0
 streamlit>=1.28.0
+plotly>=5.18.0
+
