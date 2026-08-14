@@ -16,10 +16,14 @@ from services.exchange_service import ExchangeService
 from core.indicators import TechnicalIndicators
 from core.scorer import AnalysisScorer
 from core.backtester import Backtester, BacktestConfig, BacktestResult
+from database.connection import init_db, get_watchlist, get_watchlist_details, add_to_watchlist, remove_from_watchlist
+
+# Veritabanını Başlat
+init_db()
 
 # Sayfa Yapılandırması
 st.set_page_config(
-    page_title="Kripto Analiz & Backtesting Platformu",
+    page_title="Kripto Analiz & Takip Platformu",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -50,33 +54,23 @@ st.markdown("""
         font-size: 13px;
         margin-bottom: 4px;
     }
-    .trade-badge-win {
-        background-color: rgba(0, 200, 83, 0.15);
-        color: #00e676;
-        padding: 2px 8px;
-        border-radius: 4px;
-        font-weight: 600;
-    }
-    .trade-badge-loss {
-        background-color: rgba(255, 82, 82, 0.15);
-        color: #ff5252;
-        padding: 2px 8px;
-        border-radius: 4px;
-        font-weight: 600;
-    }
 </style>
 """, unsafe_allow_html=True)
 
 # Başlık ve Açıklama
-st.title("⚡ Kripto Teknik Analiz & Strateji Simülatörü")
-st.caption("Gerçek zamanlı piyasa tarayıcısı, indikatör skorlayıcı ve geçmiş veri backtesting motoru.")
+st.title("⚡ Kripto Teknik Analiz, Takip & Backtesting Platformu")
+st.caption("Gerçek zamanlı piyasa tarayıcısı, favori coin takip ve detaylı analiz modülü ve strateji simülatörü.")
 
 # Kenar Çubuğu (Global Ayarlar)
 st.sidebar.header("⚙️ Genel Ayarlar")
 selected_exchange = st.sidebar.selectbox("Borsa Seçimi", ["binance", "kucoin", "gate", "bybit", "okx"], index=0)
 
 # Sekmeler (Tabs)
-tab_scanner, tab_backtest = st.tabs(["🔍 Canlı Piyasa Taraması", "🧪 Backtesting & Strateji Simülatörü"])
+tab_scanner, tab_watchlist, tab_backtest = st.tabs([
+    "🔍 Canlı Piyasa Taraması",
+    "⭐ Takip Listem & Detaylı İnceleme",
+    "🧪 Backtesting & Strateji Simülatörü"
+])
 
 # ==========================================
 # SEKME 1: CANLI PİYASA TARAMASI
@@ -94,7 +88,10 @@ with tab_scanner:
         
     user_coin_input = st.text_input("Listeye Ek Coin Ekle (Örn: XRP/USDT, AVAX/USDT)", "", key="scan_custom_coin")
     
-    watchlist = DEFAULT_WATCHLIST.copy()
+    # Veritabanındaki takip listesini al
+    saved_coins = get_watchlist()
+    watchlist = saved_coins.copy() if saved_coins else DEFAULT_WATCHLIST.copy()
+
     if user_coin_input:
         extra_coins = [c.strip().upper() for c in user_coin_input.split(",") if c.strip()]
         for coin in extra_coins:
@@ -126,7 +123,6 @@ with tab_scanner:
                     current_price = last_row['close']
                     result = scorer.evaluate(symbol, current_price, last_row)
                     
-                    # Ek teknik detaylar
                     result['ema_50'] = round(last_row.get('EMA_50', 0), 2)
                     result['ema_200'] = round(last_row.get('EMA_200', 0), 2)
                     result['bb_high'] = round(last_row.get('BB_High', 0), 2)
@@ -144,11 +140,9 @@ with tab_scanner:
         else:
             scan_results = st.session_state["scan_results"]
 
-        # Filtreleme
         filtered_results = [r for r in scan_results if r['score'] >= min_score_filter]
         filtered_results.sort(key=lambda x: x['score'], reverse=True)
 
-        # Özet KPI'lar
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
         with kpi1:
             st.metric("Taranan Coin Sayısı", len(scan_results))
@@ -164,7 +158,6 @@ with tab_scanner:
 
         st.markdown("---")
 
-        # Sonuç Kartları
         for res in filtered_results:
             with st.container():
                 c1, c2, c3, c4 = st.columns([2.5, 2, 2.5, 5])
@@ -174,7 +167,6 @@ with tab_scanner:
                     st.markdown(f"**Fiyat:** `{res['price']} USDT`")
 
                 with c2:
-                    score_color = "green" if res['score'] >= 65 else ("orange" if res['score'] >= 45 else "red")
                     st.metric(label="Teknik Skor", value=f"{res['score']}/100")
 
                 with c3:
@@ -199,7 +191,216 @@ with tab_scanner:
 
 
 # ==========================================
-# SEKME 2: BACKTESTING & STRATEJİ SİMÜLATÖRÜ
+# SEKME 2: TAKİP LİSTEM & DETAYLI İNCELEME
+# ==========================================
+with tab_watchlist:
+    st.markdown("### ⭐ Takip Altındaki Coinler ve Derinlemesine Analiz")
+    st.caption("Kişisel takip listenizi yönetin, seçtiğiniz coinin mum grafiğini, indikatörlerini ve destek/direnç seviyelerini detaylı inceleyin.")
+
+    # 1. Takip Listesi Yönetimi
+    with st.expander("📌 Takip Listesini Yönet (Ekle / Sil)", expanded=False):
+        col_w1, col_w2, col_w3, col_w4 = st.columns([3, 3, 2, 2])
+        with col_w1:
+            new_symbol = st.text_input("Coin Paritesi (Örn: NEAR/USDT)", key="wl_new_symbol")
+        with col_w2:
+            new_notes = st.text_input("Özel Notunuz (Örn: Destek alımı)", key="wl_new_notes")
+        with col_w3:
+            target_buy = st.number_input("Hedef Alım ($)", min_value=0.0, value=0.0, step=0.1, key="wl_target_buy")
+        with col_w4:
+            st.write("")
+            st.write("")
+            add_btn = st.button("➕ Listeye Ekle", type="primary", key="wl_add_btn")
+
+        if add_btn and new_symbol:
+            success = add_to_watchlist(
+                symbol=new_symbol,
+                notes=new_notes,
+                target_buy=target_buy if target_buy > 0 else None
+            )
+            if success:
+                st.success(f"✅ {new_symbol.upper()} takip listenize eklendi.")
+                st.rerun()
+            else:
+                st.error("Coin eklenirken bir hata oluştu.")
+
+        # Mevcut Takip Listesi Tablosu
+        wl_details = get_watchlist_details()
+        if wl_details:
+            wl_df = pd.DataFrame(wl_details)
+            st.dataframe(wl_df[['symbol', 'added_at', 'notes', 'target_buy_price']], use_container_width=True, hide_index=True)
+
+            del_col1, del_col2 = st.columns([3, 1])
+            with del_col1:
+                coin_to_del = st.selectbox("Listeden Silinecek Coini Seçin", [c['symbol'] for c in wl_details], key="del_coin_sel")
+            with del_col2:
+                st.write("")
+                st.write("")
+                if st.button("🗑️ Coini Sil", key="del_coin_btn"):
+                    remove_from_watchlist(coin_to_del)
+                    st.success(f"{coin_to_del} silindi.")
+                    st.rerun()
+
+    # 2. Detaylı Coin İnceleme Paneli
+    current_tracked_coins = get_watchlist()
+    if not current_tracked_coins:
+        current_tracked_coins = DEFAULT_WATCHLIST.copy()
+
+    st.markdown("---")
+    st.markdown("#### 🔍 Detaylı Grafik ve İndikatör İnceleyicisi")
+
+    col_insp1, col_insp2, col_insp3, col_insp4 = st.columns([3, 2, 2, 2])
+    with col_insp1:
+        inspected_coin = st.selectbox("İncelenecek Coini Seçin", current_tracked_coins, index=0, key="inspect_coin_sel")
+    with col_insp2:
+        inspected_tf = st.selectbox("Zaman Dilimi", ["15m", "1h", "4h", "1d"], index=2, key="inspect_tf_sel")
+    with col_insp3:
+        inspected_limit = st.slider("Grafik Mum Sayısı", min_value=50, max_value=500, value=200, step=50, key="inspect_limit_sel")
+    with col_insp4:
+        st.write("")
+        st.write("")
+        refresh_inspect = st.button("🔄 Verileri Güncelle", type="primary", key="refresh_inspect_btn")
+
+    # Coin Verisini Çek ve Analiz Et
+    try:
+        exchange = ExchangeService(exchange_id=selected_exchange)
+        df_coin = exchange.fetch_ohlcv(inspected_coin, timeframe=inspected_tf, limit=inspected_limit)
+    except Exception as e:
+        st.error(f"Veri alınamadı: {e}")
+        df_coin = pd.DataFrame()
+
+    if not df_coin.empty and len(df_coin) >= 50:
+        df_coin = TechnicalIndicators.add_all_indicators(df_coin)
+        sr_levels = TechnicalIndicators.calculate_support_resistance(df_coin)
+        
+        scorer = AnalysisScorer()
+        last_row = df_coin.iloc[-1]
+        eval_res = scorer.evaluate(inspected_coin, last_row['close'], last_row)
+
+        # Üst Metrik Kartları
+        top_m1, top_m2, top_m3, top_m4, top_m5 = st.columns(5)
+        with top_m1:
+            st.metric("Son Fiyat", f"{last_row['close']} USDT", delta=f"{((last_row['close'] - df_coin.iloc[-2]['close']) / df_coin.iloc[-2]['close'] * 100):+.2f}%")
+        with top_m2:
+            st.metric("Teknik Skor", f"{eval_res['score']}/100")
+        with top_m3:
+            st.metric("RSI (14)", f"{eval_res['rsi']}")
+        with top_m4:
+            st.metric("Stochastic RSI (K)", f"{last_row.get('Stoch_K', 0):.1f}")
+        with top_m5:
+            st.metric("Sinyal Kararı", eval_res['verdict'])
+
+        # Gelişmiş Plotly Grafiği (Fiyat + Hacim + RSI / MACD Subplotları)
+        fig_coin = make_subplots(
+            rows=3, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.04,
+            subplot_titles=(f"{inspected_coin} Fiyat & Hareketli Ortalamalar (EMA 50/200, Bollinger)", "İşlem Hacmi (Volume)", "RSI Momentum (14)"),
+            row_heights=[0.60, 0.20, 0.20]
+        )
+
+        # 1. Mum Grafiği
+        fig_coin.add_trace(go.Candlestick(
+            x=df_coin['timestamp'],
+            open=df_coin['open'],
+            high=df_coin['high'],
+            low=df_coin['low'],
+            close=df_coin['close'],
+            name='Mumlar',
+            increasing_line_color='#00e676',
+            decreasing_line_color='#ff5252'
+        ), row=1, col=1)
+
+        # EMA 50 & 200
+        fig_coin.add_trace(go.Scatter(
+            x=df_coin['timestamp'], y=df_coin['EMA_50'],
+            mode='lines', name='EMA 50', line=dict(color='#ff9800', width=1.5)
+        ), row=1, col=1)
+
+        fig_coin.add_trace(go.Scatter(
+            x=df_coin['timestamp'], y=df_coin['EMA_200'],
+            mode='lines', name='EMA 200', line=dict(color='#29b6f6', width=2)
+        ), row=1, col=1)
+
+        # Bollinger Bantları
+        fig_coin.add_trace(go.Scatter(
+            x=df_coin['timestamp'], y=df_coin['BB_High'],
+            mode='lines', name='BB Üst', line=dict(color='rgba(255, 255, 255, 0.3)', width=1, dash='dot')
+        ), row=1, col=1)
+
+        fig_coin.add_trace(go.Scatter(
+            x=df_coin['timestamp'], y=df_coin['BB_Low'],
+            mode='lines', name='BB Alt', line=dict(color='rgba(255, 255, 255, 0.3)', width=1, dash='dot'),
+            fill='tonexty', fillcolor='rgba(255, 255, 255, 0.03)'
+        ), row=1, col=1)
+
+        # 2. Hacim Çubukları
+        colors = ['#00e676' if row['close'] >= row['open'] else '#ff5252' for _, row in df_coin.iterrows()]
+        fig_coin.add_trace(go.Bar(
+            x=df_coin['timestamp'], y=df_coin['volume'],
+            name='Hacim', marker_color=colors, showlegend=False
+        ), row=2, col=1)
+
+        if 'Vol_SMA_20' in df_coin.columns:
+            fig_coin.add_trace(go.Scatter(
+                x=df_coin['timestamp'], y=df_coin['Vol_SMA_20'],
+                mode='lines', name='Hacim Ort. (20)', line=dict(color='#ffeb3b', width=1.2)
+            ), row=2, col=1)
+
+        # 3. RSI Grafiği
+        fig_coin.add_trace(go.Scatter(
+            x=df_coin['timestamp'], y=df_coin['RSI'],
+            mode='lines', name='RSI (14)', line=dict(color='#ab47bc', width=2)
+        ), row=3, col=1)
+
+        # RSI Aşırı Alım/Satım Seviye Çizgileri
+        fig_coin.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
+        fig_coin.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
+
+        fig_coin.update_layout(
+            template="plotly_dark",
+            height=750,
+            xaxis_rangeslider_visible=False,
+            margin=dict(l=20, r=20, t=40, b=20),
+            hovermode="x unified"
+        )
+
+        st.plotly_chart(fig_coin, use_container_width=True)
+
+        # Destek, Direnç & Analiz Notları Paneli
+        col_inf1, col_inf2 = st.columns([1, 1])
+        with col_inf1:
+            st.markdown("##### 🧱 Dinamik Destek & Direnç Seviyeleri")
+            if sr_levels:
+                sr_df = pd.DataFrame([
+                    {"Seviye": "🔴 Ana Direnç (Swing High)", "Fiyat": f"{sr_levels['resistance_major']} USDT"},
+                    {"Seviye": "Fibonacci 0.236", "Fiyat": f"{sr_levels['fib_236']} USDT"},
+                    {"Seviye": "Fibonacci 0.382", "Fiyat": f"{sr_levels['fib_382']} USDT"},
+                    {"Seviye": "Fibonacci 0.500 (Denge)", "Fiyat": f"{sr_levels['fib_500']} USDT"},
+                    {"Seviye": "Fibonacci 0.618 (Altın Oran)", "Fiyat": f"{sr_levels['fib_618']} USDT"},
+                    {"Seviye": "🟢 Ana Destek (Swing Low)", "Fiyat": f"{sr_levels['support_major']} USDT"}
+                ])
+                st.dataframe(sr_df, use_container_width=True, hide_index=True)
+
+        with col_inf2:
+            st.markdown("##### 📝 Detaylı Sinyal Notları & Tavsiyeler")
+            for note in eval_res['notes']:
+                st.markdown(f"- {note}")
+            
+            # Trend durumu
+            st.markdown("---")
+            if last_row['close'] > last_row['EMA_50'] > last_row['EMA_200']:
+                st.success("🟢 **Genel Trend:** Güçlü Yükseliş Trendi (Boğa)")
+            elif last_row['close'] < last_row['EMA_50'] < last_row['EMA_200']:
+                st.error("🔴 **Genel Trend:** Düşüş Trendi (Ayı)")
+            else:
+                st.warning("🟡 **Genel Trend:** Yatay / Konsolidasyon")
+
+    else:
+        st.warning(f"{inspected_coin} için yeterli grafik verisi bulunamadı.")
+
+
+# ==========================================
+# SEKME 3: BACKTESTING & STRATEJİ SİMÜLATÖRÜ
 # ==========================================
 with tab_backtest:
     st.markdown("### 🧪 Geçmiş Veri Strateji Simülatörü & Backtesting")
@@ -210,7 +411,8 @@ with tab_backtest:
         col_b1, col_b2, col_b3, col_b4 = st.columns(4)
 
         with col_b1:
-            bt_symbol = st.selectbox("Test Edilecek Parite", ["BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT", "BNB/USDT", "DOGE/USDT", "XRP/USDT"], index=0)
+            all_available_coins = list(set(get_watchlist() + DEFAULT_WATCHLIST))
+            bt_symbol = st.selectbox("Test Edilecek Parite", all_available_coins, index=0, key="bt_sym_sel")
             bt_timeframe = st.selectbox("Zaman Dilimi (Timeframe)", ["15m", "1h", "4h", "1d"], index=2, key="bt_tf")
             bt_candle_count = st.select_slider("Geçmiş Mum Sayısı", options=[200, 500, 1000, 1500, 2000], value=1000)
 
@@ -317,7 +519,6 @@ with tab_backtest:
         # ==========================================
         eq_df = bt_result.equity_curve
         if not eq_df.empty:
-            # 1. Sermaye Büyüme Eğrisi Grafiği
             fig_equity = go.Figure()
 
             fig_equity.add_trace(go.Scatter(
@@ -350,7 +551,6 @@ with tab_backtest:
             )
             st.plotly_chart(fig_equity, use_container_width=True)
 
-            # 2. Düşüş Grafiği (Underwater Drawdown)
             fig_dd = go.Figure()
             fig_dd.add_trace(go.Scatter(
                 x=eq_df['timestamp'],
@@ -383,7 +583,6 @@ with tab_backtest:
                 hide_index=True
             )
 
-            # CSV İndirme Butonu
             csv_data = bt_result.trades_df.to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="📥 İşlem Geçmişini CSV Olarak İndir",
@@ -392,4 +591,4 @@ with tab_backtest:
                 mime="text/csv"
             )
         else:
-            st.warning("⚠️ Seçilen zaman dilimi ve skor eşiklerinde hiçbir alım-satım işlemi gerçekleşmedi. Skor eşiklerini esnetmeyi deneyin.")
+            st.warning("⚠️ Seçilen zaman dilimi ve skor eşiklerinde hiçbir alım-satım işlemi gerçekleşmedi.")
