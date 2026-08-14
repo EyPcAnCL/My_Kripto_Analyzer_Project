@@ -11,19 +11,21 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from config.settings import DEFAULT_WATCHLIST, TIMEFRAME, CANDLE_LIMIT
 from services.exchange_service import ExchangeService
 from core.indicators import TechnicalIndicators
 from core.scorer import AnalysisScorer
 from core.backtester import Backtester, BacktestConfig, BacktestResult
-from database.connection import init_db, get_watchlist, get_watchlist_details, add_to_watchlist, remove_from_watchlist
+from database.connection import (
+    init_db, get_watchlist, get_watchlist_details,
+    add_to_watchlist, remove_from_watchlist, clear_watchlist, is_in_watchlist
+)
 
 # Veritabanını Başlat
 init_db()
 
 # Sayfa Yapılandırması
 st.set_page_config(
-    page_title="Kripto Analiz & Takip Platformu",
+    page_title="Kripto Analiz, Takip & Backtesting Platformu",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -54,234 +56,105 @@ st.markdown("""
         font-size: 13px;
         margin-bottom: 4px;
     }
+    .stButton>button {
+        border-radius: 6px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # Başlık ve Açıklama
 st.title("⚡ Kripto Teknik Analiz, Takip & Backtesting Platformu")
-st.caption("Gerçek zamanlı piyasa tarayıcısı, favori coin takip ve detaylı analiz modülü ve strateji simülatörü.")
+st.caption("İstediğiniz tüm coinleri anlık arayın, kişisel takip listenize kaydedin, profesyonel grafiklerle inceleyin ve stratejilerinizi test edin.")
 
 # Kenar Çubuğu (Global Ayarlar)
-st.sidebar.header("⚙️ Genel Ayarlar")
-selected_exchange = st.sidebar.selectbox("Borsa Seçimi", ["binance", "kucoin", "gate", "bybit", "okx"], index=0)
+st.sidebar.header("⚙️ Borsa Seçimi")
+selected_exchange = st.sidebar.selectbox("Aktif Borsa", ["binance", "kucoin", "gate", "bybit", "okx"], index=0)
 
 # Sekmeler (Tabs)
-tab_scanner, tab_watchlist, tab_backtest = st.tabs([
-    "🔍 Canlı Piyasa Taraması",
-    "⭐ Takip Listem & Detaylı İnceleme",
+tab_watchlist, tab_scanner, tab_backtest = st.tabs([
+    "⭐ Takip Listem & Canlı Coin İnceleme",
+    "🔍 Çoklu Piyasa Taraması",
     "🧪 Backtesting & Strateji Simülatörü"
 ])
 
-# ==========================================
-# SEKME 1: CANLI PİYASA TARAMASI
-# ==========================================
-with tab_scanner:
-    st.markdown("### 📊 Çoklu Coin Teknik Analiz Taraması")
-    
-    col_s1, col_s2, col_s3 = st.columns([2, 2, 2])
-    with col_s1:
-        scan_timeframe = st.selectbox("Zaman Dilimi", ["15m", "1h", "4h", "1d"], index=2, key="scan_tf")
-    with col_s2:
-        scan_candle_limit = st.slider("İncelenecek Mum Sayısı", min_value=50, max_value=500, value=150, step=50, key="scan_limit")
-    with col_s3:
-        min_score_filter = st.slider("Minimum Skor Filtresi", min_value=0, max_value=90, value=0, step=5, key="scan_min_score")
-        
-    user_coin_input = st.text_input("Listeye Ek Coin Ekle (Örn: XRP/USDT, AVAX/USDT)", "", key="scan_custom_coin")
-    
-    # Veritabanındaki takip listesini al
-    saved_coins = get_watchlist()
-    watchlist = saved_coins.copy() if saved_coins else DEFAULT_WATCHLIST.copy()
 
-    if user_coin_input:
-        extra_coins = [c.strip().upper() for c in user_coin_input.split(",") if c.strip()]
-        for coin in extra_coins:
-            if coin not in watchlist:
-                watchlist.append(coin)
-
-    start_scan = st.button("🚀 Piyasayı Şimdi Tara", type="primary", key="start_scan_btn")
-
-    if start_scan or "scan_results" in st.session_state:
-        if start_scan:
-            try:
-                exchange = ExchangeService(exchange_id=selected_exchange)
-                scorer = AnalysisScorer()
-            except Exception as e:
-                st.error(f"Borsa bağlantısı kurulamadı: {e}")
-                st.stop()
-
-            scan_results = []
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-
-            for i, symbol in enumerate(watchlist):
-                status_text.text(f"⏳ {symbol} verileri çekiliyor ve analiz ediliyor...")
-                df = exchange.fetch_ohlcv(symbol, timeframe=scan_timeframe, limit=scan_candle_limit)
-                
-                if not df.empty and len(df) >= 50:
-                    df = TechnicalIndicators.add_all_indicators(df)
-                    last_row = df.iloc[-1]
-                    current_price = last_row['close']
-                    result = scorer.evaluate(symbol, current_price, last_row)
-                    
-                    result['ema_50'] = round(last_row.get('EMA_50', 0), 2)
-                    result['ema_200'] = round(last_row.get('EMA_200', 0), 2)
-                    result['bb_high'] = round(last_row.get('BB_High', 0), 2)
-                    result['bb_low'] = round(last_row.get('BB_Low', 0), 2)
-                    result['macd'] = round(last_row.get('MACD', 0), 4)
-                    result['macd_signal'] = round(last_row.get('MACD_Signal', 0), 4)
-                    
-                    scan_results.append(result)
-
-                progress_bar.progress((i + 1) / len(watchlist))
-
-            progress_bar.empty()
-            status_text.empty()
-            st.session_state["scan_results"] = scan_results
-        else:
-            scan_results = st.session_state["scan_results"]
-
-        filtered_results = [r for r in scan_results if r['score'] >= min_score_filter]
-        filtered_results.sort(key=lambda x: x['score'], reverse=True)
-
-        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-        with kpi1:
-            st.metric("Taranan Coin Sayısı", len(scan_results))
-        with kpi2:
-            strong_buys = len([r for r in scan_results if "GÜÇLÜ" in r['verdict']])
-            st.metric("Güçlü Al Sinyalleri", strong_buys, delta=f"{strong_buys} Fırsat" if strong_buys > 0 else None)
-        with kpi3:
-            buys = len([r for r in scan_results if "KADEMELİ" in r['verdict']])
-            st.metric("Kademeli Al Sinyalleri", buys)
-        with kpi4:
-            avg_score = round(np.mean([r['score'] for r in scan_results]), 1) if scan_results else 0
-            st.metric("Ortalama Piyasa Skoru", f"{avg_score}/100")
-
-        st.markdown("---")
-
-        for res in filtered_results:
-            with st.container():
-                c1, c2, c3, c4 = st.columns([2.5, 2, 2.5, 5])
-
-                with c1:
-                    st.subheader(f"{res['symbol']}")
-                    st.markdown(f"**Fiyat:** `{res['price']} USDT`")
-
-                with c2:
-                    st.metric(label="Teknik Skor", value=f"{res['score']}/100")
-
-                with c3:
-                    st.markdown(f"**RSI (14):** `{res['rsi']}`")
-                    if "GÜÇLÜ" in res['verdict']:
-                        st.success(f"**{res['verdict']}**")
-                    elif "KADEMELİ" in res['verdict']:
-                        st.info(f"**{res['verdict']}**")
-                    elif "RİSKLİ" in res['verdict']:
-                        st.error(f"**{res['verdict']}**")
-                    else:
-                        st.warning(f"**{res['verdict']}**")
-
-                with c4:
-                    st.markdown("**Analiz & Sinyal Notları:**")
-                    for note in res['notes']:
-                        st.markdown(f"- {note}")
-
-                st.divider()
-    else:
-        st.info("👈 Tarama parametrelerini seçip **'Piyasayı Şimdi Tara'** butonuna basarak analizi başlatın.")
-
-
-# ==========================================
-# SEKME 2: TAKİP LİSTEM & DETAYLI İNCELEME
-# ==========================================
+# ==========================================================
+# SEKME 1: TAKİP LİSTEM & CANLI COİN İNCELEME (ARAMA MOTORLU)
+# ==========================================================
 with tab_watchlist:
-    st.markdown("### ⭐ Takip Altındaki Coinler ve Derinlemesine Analiz")
-    st.caption("Kişisel takip listenizi yönetin, seçtiğiniz coinin mum grafiğini, indikatörlerini ve destek/direnç seviyelerini detaylı inceleyin.")
+    st.markdown("### 🔎 İstediğiniz Coini Arayın & Takip Listenizi Yönetin")
+    st.caption("Arama çubuğuna istediğiniz herhangi bir coini yazın (Örn: PEPE, SUI, DOGE, SOL, AVAX, NEAR). Anlık verisini çekip inceleyebilir ve tek tıkla takip listenize kaydedebilirsiniz.")
 
-    # 1. Takip Listesi Yönetimi
-    with st.expander("📌 Takip Listesini Yönet (Ekle / Sil)", expanded=False):
-        col_w1, col_w2, col_w3, col_w4 = st.columns([3, 3, 2, 2])
-        with col_w1:
-            new_symbol = st.text_input("Coin Paritesi (Örn: NEAR/USDT)", key="wl_new_symbol")
-        with col_w2:
-            new_notes = st.text_input("Özel Notunuz (Örn: Destek alımı)", key="wl_new_notes")
-        with col_w3:
-            target_buy = st.number_input("Hedef Alım ($)", min_value=0.0, value=0.0, step=0.1, key="wl_target_buy")
-        with col_w4:
-            st.write("")
-            st.write("")
-            add_btn = st.button("➕ Listeye Ekle", type="primary", key="wl_add_btn")
+    # 1. Canlı Arama ve İnceleme Çubuğu
+    search_col1, search_col2, search_col3, search_col4 = st.columns([3, 2, 2, 2])
+    with search_col1:
+        search_query = st.text_input("🪙 Coin Ara / Gir", value="BTC", placeholder="Örn: PEPE, SUI, AVAX, DOGE, SOL...", key="main_coin_search")
+    with search_col2:
+        inspect_tf = st.selectbox("Zaman Dilimi", ["15m", "1h", "4h", "1d"], index=2, key="wl_inspect_tf")
+    with search_col3:
+        inspect_limit = st.slider("Grafik Mum Sayısı", min_value=50, max_value=500, value=200, step=50, key="wl_inspect_limit")
+    with search_col4:
+        st.write("")
+        st.write("")
+        search_btn = st.button("🔍 Coini Çek ve İncele", type="primary", key="btn_search_coin")
 
-        if add_btn and new_symbol:
-            success = add_to_watchlist(
-                symbol=new_symbol,
-                notes=new_notes,
-                target_buy=target_buy if target_buy > 0 else None
-            )
-            if success:
-                st.success(f"✅ {new_symbol.upper()} takip listenize eklendi.")
-                st.rerun()
-            else:
-                st.error("Coin eklenirken bir hata oluştu.")
+    # Sembolü normalize et (Örn: pepe -> PEPE/USDT)
+    current_symbol = ExchangeService.normalize_symbol(search_query) if search_query else "BTC/USDT"
 
-        # Mevcut Takip Listesi Tablosu
-        wl_details = get_watchlist_details()
-        if wl_details:
-            wl_df = pd.DataFrame(wl_details)
-            st.dataframe(wl_df[['symbol', 'added_at', 'notes', 'target_buy_price']], use_container_width=True, hide_index=True)
-
-            del_col1, del_col2 = st.columns([3, 1])
-            with del_col1:
-                coin_to_del = st.selectbox("Listeden Silinecek Coini Seçin", [c['symbol'] for c in wl_details], key="del_coin_sel")
-            with del_col2:
-                st.write("")
-                st.write("")
-                if st.button("🗑️ Coini Sil", key="del_coin_btn"):
-                    remove_from_watchlist(coin_to_del)
-                    st.success(f"{coin_to_del} silindi.")
-                    st.rerun()
-
-    # 2. Detaylı Coin İnceleme Paneli
-    current_tracked_coins = get_watchlist()
-    if not current_tracked_coins:
-        current_tracked_coins = DEFAULT_WATCHLIST.copy()
+    # Kayıtlı Takip Listesi Kontrolü
+    in_wl = is_in_watchlist(current_symbol)
 
     st.markdown("---")
-    st.markdown("#### 🔍 Detaylı Grafik ve İndikatör İnceleyicisi")
 
-    col_insp1, col_insp2, col_insp3, col_insp4 = st.columns([3, 2, 2, 2])
-    with col_insp1:
-        inspected_coin = st.selectbox("İncelenecek Coini Seçin", current_tracked_coins, index=0, key="inspect_coin_sel")
-    with col_insp2:
-        inspected_tf = st.selectbox("Zaman Dilimi", ["15m", "1h", "4h", "1d"], index=2, key="inspect_tf_sel")
-    with col_insp3:
-        inspected_limit = st.slider("Grafik Mum Sayısı", min_value=50, max_value=500, value=200, step=50, key="inspect_limit_sel")
-    with col_insp4:
-        st.write("")
-        st.write("")
-        refresh_inspect = st.button("🔄 Verileri Güncelle", type="primary", key="refresh_inspect_btn")
-
-    # Coin Verisini Çek ve Analiz Et
+    # Coinin Canlı Verisini Çek
+    exchange = None
+    df_coin = pd.DataFrame()
     try:
         exchange = ExchangeService(exchange_id=selected_exchange)
-        df_coin = exchange.fetch_ohlcv(inspected_coin, timeframe=inspected_tf, limit=inspected_limit)
+        df_coin = exchange.fetch_ohlcv(current_symbol, timeframe=inspect_tf, limit=inspect_limit)
     except Exception as e:
-        st.error(f"Veri alınamadı: {e}")
-        df_coin = pd.DataFrame()
+        st.error(f"Borsa bağlantı hatası: {e}")
 
-    if not df_coin.empty and len(df_coin) >= 50:
+    if df_coin.empty or len(df_coin) < 50:
+        st.warning(f"⚠️ **{current_symbol}** için borsadan veri çekilemedi. Lütfen parite adını kontrol edin (Örn: PEPE, SUI, BTC, DOGE).")
+    else:
+        # İndikatörleri ve Destek/Direnç Seviyelerini Hesapla
         df_coin = TechnicalIndicators.add_all_indicators(df_coin)
         sr_levels = TechnicalIndicators.calculate_support_resistance(df_coin)
-        
         scorer = AnalysisScorer()
         last_row = df_coin.iloc[-1]
-        eval_res = scorer.evaluate(inspected_coin, last_row['close'], last_row)
+        prev_row = df_coin.iloc[-2]
+        eval_res = scorer.evaluate(current_symbol, last_row['close'], last_row)
+
+        price_change = ((last_row['close'] - prev_row['close']) / prev_row['close']) * 100.0
+
+        # Başlık & Takip Listesi Butonları
+        head_col1, head_col2 = st.columns([3, 2])
+        with head_col1:
+            st.subheader(f"📊 **{current_symbol}** - Canlı Teknik Rapor ({inspect_tf.upper()})")
+        with head_col2:
+            wl_action_c1, wl_action_c2 = st.columns([1, 1])
+            with wl_action_c1:
+                if in_wl:
+                    if st.button("🗑️ Listemden Çıkar", key="btn_remove_from_wl"):
+                        remove_from_watchlist(current_symbol)
+                        st.success(f"{current_symbol} takip listenizden çıkarıldı.")
+                        st.rerun()
+                else:
+                    if st.button("⭐ Takip Listeme Kaydet", type="primary", key="btn_add_to_wl"):
+                        add_to_watchlist(current_symbol, notes="Kullanıcı takibi")
+                        st.success(f"✅ {current_symbol} takip listenize başarıyla kaydedildi!")
+                        st.rerun()
+            with wl_action_c2:
+                if in_wl:
+                    st.info("✅ Listenizde Kayıtlı")
 
         # Üst Metrik Kartları
         top_m1, top_m2, top_m3, top_m4, top_m5 = st.columns(5)
         with top_m1:
-            st.metric("Son Fiyat", f"{last_row['close']} USDT", delta=f"{((last_row['close'] - df_coin.iloc[-2]['close']) / df_coin.iloc[-2]['close'] * 100):+.2f}%")
+            st.metric("Son Fiyat", f"{last_row['close']} USDT", delta=f"%{price_change:+.2f}")
         with top_m2:
-            st.metric("Teknik Skor", f"{eval_res['score']}/100")
+            st.metric("Teknik Sağlık Skoru", f"{eval_res['score']}/100")
         with top_m3:
             st.metric("RSI (14)", f"{eval_res['rsi']}")
         with top_m4:
@@ -289,12 +162,12 @@ with tab_watchlist:
         with top_m5:
             st.metric("Sinyal Kararı", eval_res['verdict'])
 
-        # Gelişmiş Plotly Grafiği (Fiyat + Hacim + RSI / MACD Subplotları)
+        # Gelişmiş Plotly Grafiği (Fiyat + Hacim + RSI Subplotları)
         fig_coin = make_subplots(
             rows=3, cols=1,
             shared_xaxes=True,
             vertical_spacing=0.04,
-            subplot_titles=(f"{inspected_coin} Fiyat & Hareketli Ortalamalar (EMA 50/200, Bollinger)", "İşlem Hacmi (Volume)", "RSI Momentum (14)"),
+            subplot_titles=(f"{current_symbol} Fiyat & Hareketli Ortalamalar (EMA 50/200, Bollinger)", "İşlem Hacmi (Volume)", "RSI Momentum (14)"),
             row_heights=[0.60, 0.20, 0.20]
         )
 
@@ -352,7 +225,6 @@ with tab_watchlist:
             mode='lines', name='RSI (14)', line=dict(color='#ab47bc', width=2)
         ), row=3, col=1)
 
-        # RSI Aşırı Alım/Satım Seviye Çizgileri
         fig_coin.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
         fig_coin.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
 
@@ -366,7 +238,7 @@ with tab_watchlist:
 
         st.plotly_chart(fig_coin, use_container_width=True)
 
-        # Destek, Direnç & Analiz Notları Paneli
+        # Destek, Direnç & Analiz Notları
         col_inf1, col_inf2 = st.columns([1, 1])
         with col_inf1:
             st.markdown("##### 🧱 Dinamik Destek & Direnç Seviyeleri")
@@ -382,11 +254,10 @@ with tab_watchlist:
                 st.dataframe(sr_df, use_container_width=True, hide_index=True)
 
         with col_inf2:
-            st.markdown("##### 📝 Detaylı Sinyal Notları & Tavsiyeler")
+            st.markdown("##### 📝 Teknik Sinyal Notları & Durum")
             for note in eval_res['notes']:
                 st.markdown(f"- {note}")
             
-            # Trend durumu
             st.markdown("---")
             if last_row['close'] > last_row['EMA_50'] > last_row['EMA_200']:
                 st.success("🟢 **Genel Trend:** Güçlü Yükseliş Trendi (Boğa)")
@@ -395,8 +266,161 @@ with tab_watchlist:
             else:
                 st.warning("🟡 **Genel Trend:** Yatay / Konsolidasyon")
 
+    # ==========================================
+    # KAYITLI TAKİP LİSTEM (VERİTABANI KARTLARI)
+    # ==========================================
+    st.markdown("---")
+    st.markdown("### 📋 Kayıtlı Takip Listeniz")
+    
+    saved_watchlist_details = get_watchlist_details()
+
+    if not saved_watchlist_details:
+        st.info("ℹ️ Henüz takip listenize kayıtlı coin bulunmuyor. Yukarıdaki arama kutusuna istediğiniz coini (Örn: PEPE, SUI, DOGE) yazıp **'⭐ Takip Listeme Kaydet'** butonuna basarak listenizi oluşturabilirsiniz.")
     else:
-        st.warning(f"{inspected_coin} için yeterli grafik verisi bulunamadı.")
+        # Hızlı seçim butonları
+        st.markdown("**Hızlı İncelemek İçin Coine Tıklayın:**")
+        pill_cols = st.columns(min(len(saved_watchlist_details), 8))
+        for idx, coin_item in enumerate(saved_watchlist_details):
+            col_idx = idx % min(len(saved_watchlist_details), 8)
+            with pill_cols[col_idx]:
+                if st.button(f"📌 {coin_item['symbol']}", key=f"quick_pill_{coin_item['symbol']}"):
+                    st.session_state["main_coin_search"] = coin_item['symbol']
+                    st.rerun()
+
+        # Kayıtlı Coinler Tablosu ve Silme
+        wl_table_df = pd.DataFrame(saved_watchlist_details)
+        st.dataframe(wl_table_df[['symbol', 'added_at', 'notes']], use_container_width=True, hide_index=True)
+
+        col_wl_del1, col_wl_del2 = st.columns([3, 1])
+        with col_wl_del1:
+            coin_to_remove = st.selectbox("Listeden Silinecek Coini Seçin", [c['symbol'] for c in saved_watchlist_details], key="sel_coin_to_remove")
+        with col_wl_del2:
+            st.write("")
+            st.write("")
+            if st.button("🗑️ Seçili Coini Sil", key="btn_del_single_coin"):
+                remove_from_watchlist(coin_to_remove)
+                st.success(f"{coin_to_remove} silindi.")
+                st.rerun()
+
+
+# ==========================================
+# SEKME 2: ÇOKLU PİYASA TARAMASI
+# ==========================================
+with tab_scanner:
+    st.markdown("### 📊 Özel Liste ile Çoklu Piyasa Taraması")
+    st.caption("Takip listenizdeki tüm coinleri veya virgülle ayırarak girdiğiniz özel coin listesini tek tıkla tarayın.")
+
+    # Kayıtlı coinleri al
+    saved_symbols = get_watchlist()
+    default_scan_text = ", ".join(saved_symbols) if saved_symbols else "BTC, ETH, SOL, PEPE, SUI"
+
+    col_s1, col_s2, col_s3 = st.columns([2, 2, 2])
+    with col_s1:
+        scan_timeframe = st.selectbox("Zaman Dilimi", ["15m", "1h", "4h", "1d"], index=2, key="scan_tf")
+    with col_s2:
+        scan_candle_limit = st.slider("İncelenecek Mum Sayısı", min_value=50, max_value=500, value=150, step=50, key="scan_limit")
+    with col_s3:
+        min_score_filter = st.slider("Minimum Skor Filtresi", min_value=0, max_value=90, value=0, step=5, key="scan_min_score")
+
+    scan_coin_input = st.text_area(
+        "Taranacak Coinler (Virgülle ayırarak istediğiniz kadar yazabilirsiniz)",
+        value=default_scan_text,
+        placeholder="Örn: BTC, ETH, SOL, AVAX, PEPE, SUI, DOGE, NEAR, RENDER",
+        key="scan_input_coins"
+    )
+
+    scan_list = [ExchangeService.normalize_symbol(c) for c in scan_coin_input.split(",") if c.strip()]
+
+    start_scan = st.button("🚀 Listeyi Şimdi Tara", type="primary", key="start_scan_btn")
+
+    if start_scan or "scan_results" in st.session_state:
+        if start_scan:
+            try:
+                exchange = ExchangeService(exchange_id=selected_exchange)
+                scorer = AnalysisScorer()
+            except Exception as e:
+                st.error(f"Borsa bağlantısı kurulamadı: {e}")
+                st.stop()
+
+            scan_results = []
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            for i, symbol in enumerate(scan_list):
+                status_text.text(f"⏳ {symbol} verileri çekiliyor ve analiz ediliyor...")
+                df = exchange.fetch_ohlcv(symbol, timeframe=scan_timeframe, limit=scan_candle_limit)
+                
+                if not df.empty and len(df) >= 50:
+                    df = TechnicalIndicators.add_all_indicators(df)
+                    last_row = df.iloc[-1]
+                    current_price = last_row['close']
+                    result = scorer.evaluate(symbol, current_price, last_row)
+                    
+                    result['ema_50'] = round(last_row.get('EMA_50', 0), 2)
+                    result['ema_200'] = round(last_row.get('EMA_200', 0), 2)
+                    result['bb_high'] = round(last_row.get('BB_High', 0), 2)
+                    result['bb_low'] = round(last_row.get('BB_Low', 0), 2)
+                    result['macd'] = round(last_row.get('MACD', 0), 4)
+                    result['macd_signal'] = round(last_row.get('MACD_Signal', 0), 4)
+                    
+                    scan_results.append(result)
+
+                progress_bar.progress((i + 1) / len(scan_list))
+
+            progress_bar.empty()
+            status_text.empty()
+            st.session_state["scan_results"] = scan_results
+        else:
+            scan_results = st.session_state["scan_results"]
+
+        filtered_results = [r for r in scan_results if r['score'] >= min_score_filter]
+        filtered_results.sort(key=lambda x: x['score'], reverse=True)
+
+        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+        with kpi1:
+            st.metric("Taranan Coin Sayısı", len(scan_results))
+        with kpi2:
+            strong_buys = len([r for r in scan_results if "GÜÇLÜ" in r['verdict']])
+            st.metric("Güçlü Al Sinyalleri", strong_buys, delta=f"{strong_buys} Fırsat" if strong_buys > 0 else None)
+        with kpi3:
+            buys = len([r for r in scan_results if "KADEMELİ" in r['verdict']])
+            st.metric("Kademeli Al Sinyalleri", buys)
+        with kpi4:
+            avg_score = round(np.mean([r['score'] for r in scan_results]), 1) if scan_results else 0
+            st.metric("Ortalama Piyasa Skoru", f"{avg_score}/100")
+
+        st.markdown("---")
+
+        for res in filtered_results:
+            with st.container():
+                c1, c2, c3, c4 = st.columns([2.5, 2, 2.5, 5])
+
+                with c1:
+                    st.subheader(f"{res['symbol']}")
+                    st.markdown(f"**Fiyat:** `{res['price']} USDT`")
+
+                with c2:
+                    st.metric(label="Teknik Skor", value=f"{res['score']}/100")
+
+                with c3:
+                    st.markdown(f"**RSI (14):** `{res['rsi']}`")
+                    if "GÜÇLÜ" in res['verdict']:
+                        st.success(f"**{res['verdict']}**")
+                    elif "KADEMELİ" in res['verdict']:
+                        st.info(f"**{res['verdict']}**")
+                    elif "RİSKLİ" in res['verdict']:
+                        st.error(f"**{res['verdict']}**")
+                    else:
+                        st.warning(f"**{res['verdict']}**")
+
+                with c4:
+                    st.markdown("**Analiz & Sinyal Notları:**")
+                    for note in res['notes']:
+                        st.markdown(f"- {note}")
+
+                st.divider()
+    else:
+        st.info("👈 Taranacak coinleri belirleyip **'Listeyi Şimdi Tara'** butonuna basarak taramayı başlatın.")
 
 
 # ==========================================
@@ -404,15 +428,15 @@ with tab_watchlist:
 # ==========================================
 with tab_backtest:
     st.markdown("### 🧪 Geçmiş Veri Strateji Simülatörü & Backtesting")
-    st.caption("Teknik analiz puanlama motorunun geçmiş dönem performansını, kârlılığını, risk/getiri oranını ve sermaye eğrisini test edin.")
+    st.caption("İstediğiniz herhangi bir coinin geçmiş verilerini çekerek teknik alım-satım stratejinizin kârlılığını test edin.")
 
     # Parametre Giriş Formu
     with st.expander("🛠️ Backtest Parametreleri ve Strateji Ayarları", expanded=True):
         col_b1, col_b2, col_b3, col_b4 = st.columns(4)
 
         with col_b1:
-            all_available_coins = list(set(get_watchlist() + DEFAULT_WATCHLIST))
-            bt_symbol = st.selectbox("Test Edilecek Parite", all_available_coins, index=0, key="bt_sym_sel")
+            bt_symbol_raw = st.text_input("Test Edilecek Parite", value="BTC", placeholder="Örn: PEPE, SUI, DOGE, SOL, BTC...", key="bt_sym_input")
+            bt_symbol = ExchangeService.normalize_symbol(bt_symbol_raw)
             bt_timeframe = st.selectbox("Zaman Dilimi (Timeframe)", ["15m", "1h", "4h", "1d"], index=2, key="bt_tf")
             bt_candle_count = st.select_slider("Geçmiş Mum Sayısı", options=[200, 500, 1000, 1500, 2000], value=1000)
 
@@ -444,7 +468,7 @@ with tab_backtest:
                     df_historical = exchange.fetch_historical_ohlcv(bt_symbol, timeframe=bt_timeframe, total_candles=bt_candle_count)
 
                     if df_historical.empty or len(df_historical) < 50:
-                        st.error("Yeterli geçmiş veri alınamadı. Lütfen mum sayısını veya pariteyi kontrol edin.")
+                        st.error(f"❌ {bt_symbol} için yeterli geçmiş veri alınamadı. Lütfen pariteyi kontrol edin.")
                         st.stop()
 
                     cfg = BacktestConfig(

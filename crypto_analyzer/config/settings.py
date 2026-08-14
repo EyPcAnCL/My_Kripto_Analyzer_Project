@@ -7,14 +7,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Veritabanı dosya yolu
 DB_PATH = os.path.join(BASE_DIR, "database", "crypto_data.db")
 
-# Varsayılan Takip Listesi
-DEFAULT_WATCHLIST = [
-    'BTC/USDT', 
-    'ETH/USDT', 
-    'SOL/USDT', 
-    'AVAX/USDT', 
-    'BNB/USDT'
-]
+# Takip Listesi
+DEFAULT_WATCHLIST = []
+
 
 # Analiz Parametreleri
 TIMEFRAME = '4h'

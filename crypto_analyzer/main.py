@@ -6,21 +6,31 @@ if sys.platform == "win32":
         sys.stdout.reconfigure(encoding='utf-8')
     except Exception:
         pass
-from config.settings import DEFAULT_WATCHLIST, TIMEFRAME, CANDLE_LIMIT
+
+from config.settings import TIMEFRAME, CANDLE_LIMIT
 from services.exchange_service import ExchangeService
 from core.indicators import TechnicalIndicators
 from core.scorer import AnalysisScorer
 from core.backtester import Backtester, BacktestConfig
+from database.connection import init_db, get_watchlist
 
-def run_scanner(timeframe: str = TIMEFRAME, limit: int = CANDLE_LIMIT):
+init_db()
+
+def run_scanner(symbols=None, timeframe: str = TIMEFRAME, limit: int = CANDLE_LIMIT):
     print("=" * 65)
     print(f"🚀 KRİPTO TEKNİK ANALİZ PİYASA TARAYICISI ({timeframe.upper()})")
     print("=" * 65)
     
+    if not symbols:
+        symbols = get_watchlist()
+        if not symbols:
+            symbols = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'PEPE/USDT']
+
     exchange = ExchangeService(exchange_id='binance')
     scorer = AnalysisScorer()
 
-    for symbol in DEFAULT_WATCHLIST:
+    for raw_symbol in symbols:
+        symbol = ExchangeService.normalize_symbol(raw_symbol)
         df = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
         
         if df.empty or len(df) < 50:
@@ -43,6 +53,7 @@ def run_scanner(timeframe: str = TIMEFRAME, limit: int = CANDLE_LIMIT):
         print("-" * 65)
 
 def run_cli_backtest(symbol: str = 'BTC/USDT', timeframe: str = '4h', candles: int = 1000, tp: float = 6.0, sl: float = 3.5):
+    symbol = ExchangeService.normalize_symbol(symbol)
     print("=" * 65)
     print(f"🧪 STRATEJİ BACKTEST SİMÜLATÖRÜ: {symbol} ({timeframe.upper()})")
     print("=" * 65)
@@ -80,7 +91,7 @@ def run_cli_backtest(symbol: str = 'BTC/USDT', timeframe: str = '4h', candles: i
 def main():
     parser = argparse.ArgumentParser(description="Kripto Analiz ve Backtesting Aracı")
     parser.add_argument("--mode", choices=["scan", "backtest"], default="scan", help="Çalışma modu: scan (piyasa tarama) veya backtest")
-    parser.add_argument("--symbol", default="BTC/USDT", help="Backtest için coin paritesi (Örn: BTC/USDT)")
+    parser.add_argument("--symbol", default="BTC/USDT", help="Coin paritesi (Örn: PEPE, SUI, DOGE, BTC/USDT)")
     parser.add_argument("--timeframe", default="4h", help="Zaman dilimi (15m, 1h, 4h, 1d)")
     parser.add_argument("--candles", type=int, default=1000, help="Backtest mum sayısı")
     parser.add_argument("--tp", type=float, default=6.0, help="Kar al yuzdesi (oran: %%6.0)")
