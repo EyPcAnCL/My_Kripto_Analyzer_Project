@@ -14,6 +14,7 @@ from plotly.subplots import make_subplots
 from services.exchange_service import ExchangeService
 from core.indicators import TechnicalIndicators
 from core.scorer import AnalysisScorer
+from core.divergence import DivergenceDetector, DivergenceResult
 from core.backtester import Backtester, BacktestConfig, BacktestResult
 from database.connection import (
     init_db, get_watchlist, get_watchlist_details,
@@ -25,7 +26,7 @@ init_db()
 
 # Sayfa Yapılandırması
 st.set_page_config(
-    page_title="Kripto Analiz, Takip & Backtesting Platformu",
+    page_title="Kripto Analiz, Takip & Divergence Platformu",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -41,30 +42,33 @@ st.markdown("""
         padding: 14px;
         text-align: center;
     }
-    .metric-value-green {
-        color: #00c853;
-        font-size: 22px;
-        font-weight: bold;
+    .div-box-bullish {
+        background-color: rgba(0, 200, 83, 0.12);
+        border: 1px solid #00c853;
+        border-radius: 8px;
+        padding: 12px 16px;
+        margin-bottom: 12px;
     }
-    .metric-value-red {
-        color: #ff5252;
-        font-size: 22px;
-        font-weight: bold;
+    .div-box-bearish {
+        background-color: rgba(255, 82, 82, 0.12);
+        border: 1px solid #ff5252;
+        border-radius: 8px;
+        padding: 12px 16px;
+        margin-bottom: 12px;
     }
-    .metric-label {
-        color: #90a4ae;
+    .div-badge {
+        display: inline-block;
+        padding: 4px 10px;
+        border-radius: 4px;
+        font-weight: bold;
         font-size: 13px;
-        margin-bottom: 4px;
-    }
-    .stButton>button {
-        border-radius: 6px;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # Başlık ve Açıklama
-st.title("⚡ Kripto Teknik Analiz, Takip & Backtesting Platformu")
-st.caption("İstediğiniz tüm coinleri anlık arayın, kişisel takip listenize kaydedin, profesyonel grafiklerle inceleyin ve stratejilerinizi test edin.")
+st.title("⚡ Kripto Teknik Analiz & Divergence (Uyumsuzluk) Platformu")
+st.caption("RSI ve MACD Tepe/Dip Uyumsuzluk Motoru, Canlı Piyasa Tarayıcısı ve Backtesting Simülatörü.")
 
 # Kenar Çubuğu (Global Ayarlar)
 st.sidebar.header("⚙️ Borsa Seçimi")
@@ -79,13 +83,13 @@ tab_watchlist, tab_scanner, tab_backtest = st.tabs([
 
 
 # ==========================================================
-# SEKME 1: TAKİP LİSTEM & CANLI COİN İNCELEME (ARAMA MOTORLU)
+# SEKME 1: TAKİP LİSTEM & CANLI COİN İNCELEME (ARAMA + DIVERGENCE)
 # ==========================================================
 with tab_watchlist:
-    st.markdown("### 🔎 İstediğiniz Coini Arayın & Takip Listenizi Yönetin")
-    st.caption("Arama çubuğuna istediğiniz herhangi bir coini yazın (Örn: PEPE, SUI, DOGE, SOL, AVAX, NEAR). Anlık verisini çekip inceleyebilir ve tek tıkla takip listenize kaydedebilirsiniz.")
+    st.markdown("### 🔎 İstediğiniz Coini Arayın & Uyumsuzlukları (Divergence) Yakalayın")
+    st.caption("Arama çubuğuna istediğiniz herhangi bir coini yazın (Örn: BTC, ETH, PEPE, SUI, DOGE, AVAX, NEAR, SOL). Anlık verisi, mum grafiği ve otomatik tepe/dip uyumsuzlukları anında tespit edilir.")
 
-    # 1. Canlı Arama ve İnceleme Çubuğu
+    # 1. Canlı Arama Çubuğu
     search_col1, search_col2, search_col3, search_col4 = st.columns([3, 2, 2, 2])
     with search_col1:
         search_query = st.text_input("🪙 Coin Ara / Gir", value="BTC", placeholder="Örn: PEPE, SUI, AVAX, DOGE, SOL...", key="main_coin_search")
@@ -98,10 +102,7 @@ with tab_watchlist:
         st.write("")
         search_btn = st.button("🔍 Coini Çek ve İncele", type="primary", key="btn_search_coin")
 
-    # Sembolü normalize et (Örn: pepe -> PEPE/USDT)
     current_symbol = ExchangeService.normalize_symbol(search_query) if search_query else "BTC/USDT"
-
-    # Kayıtlı Takip Listesi Kontrolü
     in_wl = is_in_watchlist(current_symbol)
 
     st.markdown("---")
@@ -116,15 +117,20 @@ with tab_watchlist:
         st.error(f"Borsa bağlantı hatası: {e}")
 
     if df_coin.empty or len(df_coin) < 50:
-        st.warning(f"⚠️ **{current_symbol}** için borsadan veri çekilemedi. Lütfen parite adını kontrol edin (Örn: PEPE, SUI, BTC, DOGE).")
+        st.warning(f"⚠️ **{current_symbol}** için borsadan veri çekilemedi. Lütfen parite adını kontrol edin.")
     else:
-        # İndikatörleri ve Destek/Direnç Seviyelerini Hesapla
+        # 1. İndikatörleri Hesapla
         df_coin = TechnicalIndicators.add_all_indicators(df_coin)
         sr_levels = TechnicalIndicators.calculate_support_resistance(df_coin)
+        
+        # 2. Uyumsuzlukları (Divergence) Tespit Et
+        div_res = DivergenceDetector.detect_all(df_coin)
+
+        # 3. Puanlamayı Yap
         scorer = AnalysisScorer()
         last_row = df_coin.iloc[-1]
         prev_row = df_coin.iloc[-2]
-        eval_res = scorer.evaluate(current_symbol, last_row['close'], last_row)
+        eval_res = scorer.evaluate(current_symbol, last_row['close'], last_row, df=df_coin)
 
         price_change = ((last_row['close'] - prev_row['close']) / prev_row['close']) * 100.0
 
@@ -162,12 +168,27 @@ with tab_watchlist:
         with top_m5:
             st.metric("Sinyal Kararı", eval_res['verdict'])
 
+        # UYUMSUZLUK (DIVERGENCE) ÖZEL BİLGİ KUTUSU
+        if div_res.signals:
+            st.markdown("#### 🎯 Otomatik Tespit Edilen Uyumsuzluklar (Divergence)")
+            for sig in div_res.signals:
+                if sig.is_bullish:
+                    st.success(f"### {sig.name_tr}\n{sig.description}")
+                else:
+                    st.error(f"### {sig.name_tr}\n{sig.description}")
+        else:
+            st.info("ℹ️ Son 50 mumluk periyotta aktif bir RSI/MACD tepe veya dip uyumsuzluğu bulunmuyor. Fiyat ve momentum dengeli hareket ediyor.")
+
         # Gelişmiş Plotly Grafiği (Fiyat + Hacim + RSI Subplotları)
         fig_coin = make_subplots(
             rows=3, cols=1,
             shared_xaxes=True,
             vertical_spacing=0.04,
-            subplot_titles=(f"{current_symbol} Fiyat & Hareketli Ortalamalar (EMA 50/200, Bollinger)", "İşlem Hacmi (Volume)", "RSI Momentum (14)"),
+            subplot_titles=(
+                f"{current_symbol} Fiyat & Trend Çizgileri (EMA 50/200, Bollinger, Divergence Hatları)",
+                "İşlem Hacmi (Volume)",
+                "RSI Momentum (14) & Uyumsuzluklar"
+            ),
             row_heights=[0.60, 0.20, 0.20]
         )
 
@@ -206,6 +227,32 @@ with tab_watchlist:
             fill='tonexty', fillcolor='rgba(255, 255, 255, 0.03)'
         ), row=1, col=1)
 
+        # UYUMSUZLUK ÇİZGİLERİNİ FİYAT VE RSI GRAFİĞİNE EKLE
+        for sig in div_res.signals:
+            line_col = '#00e676' if sig.is_bullish else '#ff5252'
+            # Fiyat üzerindeki çizgi
+            fig_coin.add_trace(go.Scatter(
+                x=[sig.p1_time, sig.p2_time],
+                y=[sig.p1_price, sig.p2_price],
+                mode='lines+markers+text',
+                name=f"{sig.indicator} {sig.type}",
+                text=["", "⚡ " + ("Pozitif Uyumsuzluk" if sig.is_bullish else "Negatif Uyumsuzluk")],
+                textposition="bottom center" if sig.is_bullish else "top center",
+                line=dict(color=line_col, width=3, dash='dashdot'),
+                marker=dict(size=8, color=line_col)
+            ), row=1, col=1)
+
+            # RSI üzerindeki çizgi
+            if sig.indicator == 'RSI':
+                fig_coin.add_trace(go.Scatter(
+                    x=[sig.p1_time, sig.p2_time],
+                    y=[sig.p1_val, sig.p2_val],
+                    mode='lines+markers',
+                    name=f"RSI {sig.type}",
+                    line=dict(color=line_col, width=2.5, dash='dashdot'),
+                    marker=dict(size=7, color=line_col)
+                ), row=3, col=1)
+
         # 2. Hacim Çubukları
         colors = ['#00e676' if row['close'] >= row['open'] else '#ff5252' for _, row in df_coin.iterrows()]
         fig_coin.add_trace(go.Bar(
@@ -230,7 +277,7 @@ with tab_watchlist:
 
         fig_coin.update_layout(
             template="plotly_dark",
-            height=750,
+            height=780,
             xaxis_rangeslider_visible=False,
             margin=dict(l=20, r=20, t=40, b=20),
             hovermode="x unified"
@@ -277,7 +324,6 @@ with tab_watchlist:
     if not saved_watchlist_details:
         st.info("ℹ️ Henüz takip listenize kayıtlı coin bulunmuyor. Yukarıdaki arama kutusuna istediğiniz coini (Örn: PEPE, SUI, DOGE) yazıp **'⭐ Takip Listeme Kaydet'** butonuna basarak listenizi oluşturabilirsiniz.")
     else:
-        # Hızlı seçim butonları
         st.markdown("**Hızlı İncelemek İçin Coine Tıklayın:**")
         pill_cols = st.columns(min(len(saved_watchlist_details), 8))
         for idx, coin_item in enumerate(saved_watchlist_details):
@@ -287,7 +333,6 @@ with tab_watchlist:
                     st.session_state["main_coin_search"] = coin_item['symbol']
                     st.rerun()
 
-        # Kayıtlı Coinler Tablosu ve Silme
         wl_table_df = pd.DataFrame(saved_watchlist_details)
         st.dataframe(wl_table_df[['symbol', 'added_at', 'notes']], use_container_width=True, hide_index=True)
 
@@ -304,15 +349,14 @@ with tab_watchlist:
 
 
 # ==========================================
-# SEKME 2: ÇOKLU PİYASA TARAMASI
+# SEKME 2: ÇOKLU PİYASA TARAMASI (DIVERGENCE DESTEKLİ)
 # ==========================================
 with tab_scanner:
-    st.markdown("### 📊 Özel Liste ile Çoklu Piyasa Taraması")
-    st.caption("Takip listenizdeki tüm coinleri veya virgülle ayırarak girdiğiniz özel coin listesini tek tıkla tarayın.")
+    st.markdown("### 📊 Çoklu Piyasa & Divergence Taraması")
+    st.caption("Takip listenizdeki tüm coinleri veya girdiğiniz özel coin listesini tek tıkla tarayarak hem teknik puanları hem de oluşan uyumsuzlukları listeleyin.")
 
-    # Kayıtlı coinleri al
     saved_symbols = get_watchlist()
-    default_scan_text = ", ".join(saved_symbols) if saved_symbols else "BTC, ETH, SOL, PEPE, SUI"
+    default_scan_text = ", ".join(saved_symbols) if saved_symbols else "BTC, ETH, SOL, PEPE, SUI, AVAX, DOGE"
 
     col_s1, col_s2, col_s3 = st.columns([2, 2, 2])
     with col_s1:
@@ -354,7 +398,7 @@ with tab_scanner:
                     df = TechnicalIndicators.add_all_indicators(df)
                     last_row = df.iloc[-1]
                     current_price = last_row['close']
-                    result = scorer.evaluate(symbol, current_price, last_row)
+                    result = scorer.evaluate(symbol, current_price, last_row, df=df)
                     
                     result['ema_50'] = round(last_row.get('EMA_50', 0), 2)
                     result['ema_200'] = round(last_row.get('EMA_200', 0), 2)
@@ -383,8 +427,8 @@ with tab_scanner:
             strong_buys = len([r for r in scan_results if "GÜÇLÜ" in r['verdict']])
             st.metric("Güçlü Al Sinyalleri", strong_buys, delta=f"{strong_buys} Fırsat" if strong_buys > 0 else None)
         with kpi3:
-            buys = len([r for r in scan_results if "KADEMELİ" in r['verdict']])
-            st.metric("Kademeli Al Sinyalleri", buys)
+            div_count = len([r for r in scan_results if r.get('divergence') and r['divergence'].signals])
+            st.metric("Tespit Edilen Uyumsuzluklar", div_count, delta="RSI/MACD")
         with kpi4:
             avg_score = round(np.mean([r['score'] for r in scan_results]), 1) if scan_results else 0
             st.metric("Ortalama Piyasa Skoru", f"{avg_score}/100")
@@ -414,6 +458,14 @@ with tab_scanner:
                         st.warning(f"**{res['verdict']}**")
 
                 with c4:
+                    # Uyumsuzluk Rozeti Varsa Göster
+                    if res.get('divergence') and res['divergence'].signals:
+                        for s in res['divergence'].signals:
+                            if s.is_bullish:
+                                st.success(f"**{s.name_tr}**")
+                            else:
+                                st.error(f"**{s.name_tr}**")
+
                     st.markdown("**Analiz & Sinyal Notları:**")
                     for note in res['notes']:
                         st.markdown(f"- {note}")

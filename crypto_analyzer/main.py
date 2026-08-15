@@ -41,7 +41,7 @@ def run_scanner(symbols=None, timeframe: str = TIMEFRAME, limit: int = CANDLE_LI
         last_row = df.iloc[-1]
         current_price = last_row['close']
         
-        result = scorer.evaluate(symbol, current_price, last_row)
+        result = scorer.evaluate(symbol, current_price, last_row, df=df)
 
         print(f"🪙 Parite  : {result['symbol']}")
         print(f"💰 Fiyat   : {result['price']} USDT")
