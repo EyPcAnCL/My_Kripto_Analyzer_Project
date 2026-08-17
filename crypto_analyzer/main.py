@@ -10,6 +10,7 @@ if sys.platform == "win32":
 
 from config.settings import SUPPORTED_TIMEFRAMES, DEFAULT_TIMEFRAME, DEFAULT_CANDLE_LIMIT
 from services.market_data_service import MarketDataService
+from services.indicator_service import IndicatorService
 
 def handle_collect(service: MarketDataService, symbol: str, timeframe: str, limit: int):
     print(f"📥 Veri Toplama Başlatılıyor: {symbol} [{timeframe}] (Limit: {limit})...")
@@ -58,10 +59,65 @@ def handle_show(service: MarketDataService, symbol: str, timeframe: str, limit: 
     else:
         print(f"ℹ️ {symbol} [{timeframe}] için veritabanında kayıtlı veri bulunamadı.")
 
+def handle_indicators(indicator_service: IndicatorService, symbol: str, timeframe: str, candles: int):
+    print("=" * 65)
+    print(f"📊 8 TEMEL TEKNİK GÖSTERGE SAYISAL RAPORU: {symbol} [{timeframe.upper()}]")
+    print("   (Al/Sat sinyali üretilmeden saf matematiksel değerler raporlanır)")
+    print("=" * 65)
+
+    metrics = indicator_service.get_latest_numerical_metrics(symbol=symbol, timeframe=timeframe)
+    if not metrics:
+        print(f"❌ {symbol} [{timeframe}] için indikatörler hesaplanamadı.")
+        return
+
+    print(f"🪙 Sembol          : {symbol}")
+    print(f"🕒 Son Mum Zamanı  : {metrics.get('timestamp')}")
+    print(f"💰 Son Fiyat       : {metrics.get('close')} USDT")
+    print("-" * 65)
+    print("1. SMA (Basit Hareketli Ortalamalar):")
+    print(f"   • sma_20        = {metrics.get('sma_20')}")
+    print(f"   • sma_50        = {metrics.get('sma_50')}")
+    print(f"   • sma_200       = {metrics.get('sma_200')}")
+    print("-" * 65)
+    print("2. EMA (Üstel Hareketli Ortalamalar):")
+    print(f"   • ema_9         = {metrics.get('ema_9')}")
+    print(f"   • ema_21        = {metrics.get('ema_21')}")
+    print(f"   • ema_50        = {metrics.get('ema_50')}")
+    print(f"   • ema_200       = {metrics.get('ema_200')}")
+    print("-" * 65)
+    print("3. RSI (Bağıl Güç Endeksi - 14):")
+    print(f"   • rsi           = {metrics.get('rsi')}")
+    print("-" * 65)
+    print("4. MACD (12, 26, 9):")
+    print(f"   • macd          = {metrics.get('macd')}")
+    print(f"   • macd_signal   = {metrics.get('macd_signal')}")
+    print(f"   • macd_hist     = {metrics.get('macd_hist')}")
+    print("-" * 65)
+    print("5. Bollinger Bands (20, 2):")
+    print(f"   • bb_high       = {metrics.get('bb_high')}")
+    print(f"   • bb_mid        = {metrics.get('bb_mid')}")
+    print(f"   • bb_low        = {metrics.get('bb_low')}")
+    print(f"   • bb_width (%%)  = %{metrics.get('bb_width')}")
+    print(f"   • bb_pctb       = {metrics.get('bb_pctb')}")
+    print("-" * 65)
+    print("6. ATR (Average True Range - 14):")
+    print(f"   • atr           = {metrics.get('atr')} USDT")
+    print("-" * 65)
+    print("7. Stochastic RSI (14, 3, 3):")
+    print(f"   • stoch_k       = {metrics.get('stoch_k')}")
+    print(f"   • stoch_d       = {metrics.get('stoch_d')}")
+    print("-" * 65)
+    print("8. ADX (Trend Gücü - 14):")
+    print(f"   • adx           = {metrics.get('adx')}")
+    print(f"   • adx_pos_di    = {metrics.get('adx_pos_di')}")
+    print(f"   • adx_neg_di    = {metrics.get('adx_neg_di')}")
+    print("=" * 65)
+    print("💾 Tüm sayısal indikatör kayıtları SQLite veritabanına kaydedildi.")
+
 def main():
-    parser = argparse.ArgumentParser(description="Kripto Fiyat Verisi (OHLCV) Yönetim CLI")
-    parser.add_argument("--action", choices=["collect", "collect-all", "backfill", "status", "show"], default="status",
-                        help="İşlem türü: collect, collect-all, backfill, status, show")
+    parser = argparse.ArgumentParser(description="Kripto Fiyat Verisi ve İndikatör Yönetim CLI")
+    parser.add_argument("--action", choices=["collect", "collect-all", "backfill", "status", "show", "indicators"], default="indicators",
+                        help="İşlem türü: collect, collect-all, backfill, status, show, indicators")
     parser.add_argument("--symbol", default="BTC/USDT", help="Coin sembolü (Örn: BTC, ETH, SOL, PEPE, AVAX)")
     parser.add_argument("--timeframe", default=DEFAULT_TIMEFRAME, choices=SUPPORTED_TIMEFRAMES, help="Zaman dilimi (1m, 5m, 15m, 1h, 4h, 1d)")
     parser.add_argument("--candles", type=int, default=DEFAULT_CANDLE_LIMIT, help="Mum sayısı")
@@ -69,18 +125,21 @@ def main():
     parser.add_argument("--exchange", default="binance", help="Borsa adı (binance, kucoin, gate, bybit, okx)")
 
     args = parser.parse_args()
-    service = MarketDataService(exchange_id=args.exchange)
+    market_service = MarketDataService(exchange_id=args.exchange)
+    indicator_service = IndicatorService(exchange_id=args.exchange)
 
     if args.action == "collect":
-        handle_collect(service, args.symbol, args.timeframe, args.candles)
+        handle_collect(market_service, args.symbol, args.timeframe, args.candles)
     elif args.action == "collect-all":
-        handle_collect_all(service, args.symbol, args.candles)
+        handle_collect_all(market_service, args.symbol, args.candles)
     elif args.action == "backfill":
-        handle_backfill(service, args.symbol, args.timeframe, args.candles)
+        handle_backfill(market_service, args.symbol, args.timeframe, args.candles)
     elif args.action == "status":
-        handle_status(service)
+        handle_status(market_service)
     elif args.action == "show":
-        handle_show(service, args.symbol, args.timeframe, args.limit)
+        handle_show(market_service, args.symbol, args.timeframe, args.limit)
+    elif args.action == "indicators":
+        handle_indicators(indicator_service, args.symbol, args.timeframe, args.candles)
 
 if __name__ == "__main__":
     main()
