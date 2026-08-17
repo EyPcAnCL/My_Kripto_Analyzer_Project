@@ -5,17 +5,21 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Veritabanı dosya yolu
-DB_PATH = os.path.join(BASE_DIR, "database", "crypto_data.db")
+DATABASE_DIR = os.path.join(BASE_DIR, "database")
+DB_PATH = os.path.join(DATABASE_DIR, "crypto_data.db")
 
-# Takip Listesi
-DEFAULT_WATCHLIST = []
+# Desteklenen Zaman Dilimleri (OHLCV)
+SUPPORTED_TIMEFRAMES = [
+    '1m',   # 1 Dakika
+    '5m',   # 5 Dakika
+    '15m',  # 15 Dakika
+    '1h',   # 1 Saat
+    '4h',   # 4 Saat
+    '1d'    # 1 Gün
+]
 
+DEFAULT_TIMEFRAME = '4h'
+DEFAULT_CANDLE_LIMIT = 500
 
-# Analiz Parametreleri
-TIMEFRAME = '4h'
-CANDLE_LIMIT = 100
-
-# Skor Eşikleri
-SCORE_STRONG_BUY = 75
-SCORE_BUY = 60
-SCORE_RISKY = 40
+# Varsayılan Borsa
+DEFAULT_EXCHANGE = 'binance'
