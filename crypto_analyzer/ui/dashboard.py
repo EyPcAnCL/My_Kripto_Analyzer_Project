@@ -14,12 +14,13 @@ from config.settings import SUPPORTED_TIMEFRAMES, DEFAULT_TIMEFRAME
 from services.exchange_service import ExchangeService
 from services.market_data_service import MarketDataService
 from services.indicator_service import IndicatorService
+from core.structure import PriceStructureAnalyzer
 from database.connection import init_db
 
 init_db()
 
 st.set_page_config(
-    page_title="Kripto Fiyat & Sayısal İndikatör Platformu",
+    page_title="Kripto Fiyat Yapısı & Teknik Analiz Platformu",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -46,11 +47,32 @@ st.markdown("""
         font-size: 18px;
         font-weight: bold;
     }
+    .statement-box-up {
+        background-color: rgba(0, 200, 83, 0.12);
+        border: 1px solid #00c853;
+        border-radius: 8px;
+        padding: 16px;
+        margin-bottom: 16px;
+    }
+    .statement-box-down {
+        background-color: rgba(255, 82, 82, 0.12);
+        border: 1px solid #ff5252;
+        border-radius: 8px;
+        padding: 16px;
+        margin-bottom: 16px;
+    }
+    .statement-box-range {
+        background-color: rgba(255, 235, 59, 0.12);
+        border: 1px solid #fbc02d;
+        border-radius: 8px;
+        padding: 16px;
+        margin-bottom: 16px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚡ Kripto Fiyat & Sayısal İndikatör Platformu")
-st.caption("8 Temel Teknik Göstergenin (SMA, EMA, RSI, MACD, Bollinger, ATR, StochRSI, ADX) net sayısal verileri ve çoklu zaman dilimli OHLCV arşivi.")
+st.title("⚡ Kripto Fiyat Yapısı & Teknik Analiz Platformu")
+st.caption("Fiyat Yapısı (Market Structure), Destek/Direnç Seviyeleri, HH/HL/LH/LL Tespiti, Trend Yönü ve Sayısal İndikatör Katmanı.")
 
 # Kenar Çubuğu
 st.sidebar.header("⚙️ Genel Ayarlar")
@@ -60,14 +82,185 @@ market_service = MarketDataService(exchange_id=selected_exchange)
 indicator_service = IndicatorService(exchange_id=selected_exchange)
 
 # Sekmeler
-tab_indicators, tab_ohlcv, tab_storage = st.tabs([
-    "📊 8 Temel İndikatör (Sayısal Veriler)",
+tab_structure, tab_indicators, tab_ohlcv, tab_storage = st.tabs([
+    "🏛️ Fiyat Yapısı & Trend Durumu",
+    "📊 8 Temel İndikatör (Sayısal)",
     "📦 OHLCV Veri Toplama",
-    "💾 Veritabanı Arşivi & Durum"
+    "💾 Veritabanı Arşivi"
 ])
 
+
 # ==========================================================
-# SEKME 1: 8 TEMEL İNDİKATÖR SAYISAL PANELİ
+# SEKME 1: FİYAT YAPISI & TREND TESPİTİ (MARKET STRUCTURE)
+# ==========================================================
+with tab_structure:
+    st.markdown("### 🏛️ Fiyat Yapısı (Market Structure) & Trend Tespiti")
+    st.caption("Piyasa tepe ve dipleri (HH, HL, LH, LL), dinamik destek/direnç seviyeleri, trend yönü ve kırılımlar.")
+
+    col_s1, col_s2, col_s3, col_s4 = st.columns([3, 2, 2, 2])
+    with col_s1:
+        struct_coin_raw = st.text_input("🪙 Coin Ara / Gir", value="BTC", placeholder="Örn: BTC, ETH, SOL, PEPE, SUI...", key="struct_coin_input")
+    with col_s2:
+        struct_tf = st.selectbox("Zaman Dilimi", SUPPORTED_TIMEFRAMES, index=4, key="struct_tf_select") # 4h
+    with col_s3:
+        struct_limit = st.slider("İncelenecek Mum Sayısı", min_value=50, max_value=500, value=150, step=25, key="struct_limit_slider")
+    with col_s4:
+        st.write("")
+        st.write("")
+        struct_btn = st.button("🔍 Fiyat Yapısını Analiz Et", type="primary", key="btn_calc_struct")
+
+    struct_symbol = ExchangeService.normalize_symbol(struct_coin_raw)
+
+    df_struct = pd.DataFrame()
+    if struct_btn or "last_struct_symbol" in st.session_state:
+        if struct_btn:
+            with st.spinner(f"⏳ {struct_symbol} [{struct_tf}] için fiyat yapısı analiz ediliyor..."):
+                df_struct = market_service.get_candles(struct_symbol, timeframe=struct_tf, limit=struct_limit, auto_fetch=True)
+                st.session_state["last_struct_symbol"] = struct_symbol
+                st.session_state["last_struct_tf"] = struct_tf
+                st.session_state["df_struct"] = df_struct
+        else:
+            df_struct = st.session_state.get("df_struct", pd.DataFrame())
+
+    if not df_struct.empty and len(df_struct) >= 20:
+        struct_res = PriceStructureAnalyzer.analyze(df_struct, symbol=struct_symbol, timeframe=struct_tf)
+
+        st.markdown("---")
+
+        # 1. BÜYÜK DURUM BİLDİRİM KUTUSU (STATEMENT BANNER)
+        box_class = "statement-box-up" if struct_res.trend == "UPTREND" else ("statement-box-down" if struct_res.trend == "DOWNTREND" else "statement-box-range")
+        st.markdown(f"""
+        <div class="{box_class}">
+            <div style="font-size:22px; font-weight:bold; margin-bottom:6px;">
+                {struct_res.trend_badge} — {struct_res.trend_name_tr}
+            </div>
+            <div style="font-size:16px; color:#eceff1;">
+                📢 {struct_res.statement}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # 2. ÜST METRİKLER & DESTEK/DİRENÇ KARTLARI
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            st.metric("Son Fiyat", f"{struct_res.current_price:,.2f} USDT")
+        with m2:
+            st.metric(
+                "En Yakın Destek",
+                f"{struct_res.nearest_support:,.2f} USDT" if struct_res.nearest_support else "-",
+                delta=f"-%{struct_res.dist_to_support_pct}" if struct_res.dist_to_support_pct else None,
+                delta_color="normal"
+            )
+        with m3:
+            st.metric(
+                "En Yakın Direnç",
+                f"{struct_res.nearest_resistance:,.2f} USDT" if struct_res.nearest_resistance else "-",
+                delta=f"+%{struct_res.dist_to_resistance_pct}" if struct_res.dist_to_resistance_pct else None,
+                delta_color="inverse"
+            )
+        with m4:
+            last_pt = struct_res.points[-1] if struct_res.points else None
+            st.metric("Son Yapı Noktası", f"{last_pt.point_type} ({last_pt.price:,.2f})" if last_pt else "-")
+
+        # Kırılım Uyarısı (Breakout / Breakdown)
+        if struct_res.is_breakout:
+            st.success(f"### {struct_res.breakout_details}")
+        if struct_res.is_breakdown:
+            st.error(f"### {struct_res.breakout_details}")
+
+        # 3. PLOTLY FİYAT YAPISI GRAFİĞİ (MUMLAR + HH/HL/LH/LL ETİKETLERİ + DESTEK/DİRENÇ)
+        fig_struct = make_subplots(
+            rows=2, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.03,
+            subplot_titles=(f"{struct_symbol} Fiyat Yapısı (HH, HL, LH, LL ve Destek/Direnç Çizgileri)", "İşlem Hacmi (Volume)"),
+            row_heights=[0.75, 0.25]
+        )
+
+        # Mumlar
+        fig_struct.add_trace(go.Candlestick(
+            x=df_struct['timestamp'],
+            open=df_struct['open'], high=df_struct['high'], low=df_struct['low'], close=df_struct['close'],
+            name='Mumlar', increasing_line_color='#00e676', decreasing_line_color='#ff5252'
+        ), row=1, col=1)
+
+        # Fiyat Yapısı Noktalarını (HH, HL, LH, LL) Grafiğe Ekle
+        for pt in struct_res.points:
+            color = '#00e676' if pt.point_type in ['HH', 'HL'] else ('#ff5252' if pt.point_type in ['LH', 'LL'] else '#ffeb3b')
+            pos = "top center" if pt.is_high else "bottom center"
+
+            fig_struct.add_trace(go.Scatter(
+                x=[pt.timestamp],
+                y=[pt.price],
+                mode='markers+text',
+                name=f"{pt.point_type} ({pt.price:,.2f})",
+                text=[f"<b>{pt.point_type}</b>"],
+                textposition=pos,
+                textfont=dict(size=11, color=color),
+                marker=dict(size=8, color=color, symbol='circle'),
+                showlegend=False
+            ), row=1, col=1)
+
+        # Destek ve Direnç Yatay Çizgileri
+        if struct_res.nearest_support:
+            fig_struct.add_hline(
+                y=struct_res.nearest_support,
+                line_dash="dash", line_color="#00e676", line_width=1.5,
+                annotation_text=f"Destek: {struct_res.nearest_support:,.2f}",
+                annotation_position="bottom right",
+                row=1, col=1
+            )
+
+        if struct_res.nearest_resistance:
+            fig_struct.add_hline(
+                y=struct_res.nearest_resistance,
+                line_dash="dash", line_color="#ff5252", line_width=1.5,
+                annotation_text=f"Direnç: {struct_res.nearest_resistance:,.2f}",
+                annotation_position="top right",
+                row=1, col=1
+            )
+
+        # Hacim
+        vol_colors = ['#00e676' if row['close'] >= row['open'] else '#ff5252' for _, row in df_struct.iterrows()]
+        fig_struct.add_trace(go.Bar(
+            x=df_struct['timestamp'], y=df_struct['volume'],
+            name='Volume', marker_color=vol_colors, showlegend=False
+        ), row=2, col=1)
+
+        fig_struct.update_layout(
+            template="plotly_dark",
+            height=650,
+            xaxis_rangeslider_visible=False,
+            margin=dict(l=20, r=20, t=40, b=20),
+            hovermode="x unified"
+        )
+
+        st.plotly_chart(fig_struct, use_container_width=True)
+
+        # 4. YAPI NOTLARI VE PİVOT LİSTESİ
+        col_nt1, col_nt2 = st.columns([1, 1])
+        with col_nt1:
+            st.markdown("##### 📝 Fiyat Yapısı Analiz Özeti")
+            for note in struct_res.summary_notes:
+                st.markdown(f"- {note}")
+
+        with col_nt2:
+            st.markdown("##### 📍 Son Tepe ve Dip Noktaları (Pivots)")
+            pts_data = [{
+                'Tür': pt.point_type,
+                'Açıklama': pt.name_tr,
+                'Fiyat (USDT)': f"{pt.price:,.2f}",
+                'Tarih': pt.timestamp.strftime('%Y-%m-%d %H:%M'),
+                'Mum Önce': f"{pt.candles_ago} mum"
+            } for pt in reversed(struct_res.points[-8:])]
+            st.dataframe(pd.DataFrame(pts_data), use_container_width=True, hide_index=True)
+
+    else:
+        st.info("👈 Coini ve zaman dilimini seçip **'Fiyat Yapısını Analiz Et'** butonuna tıklayarak piyasa yapısını görüntüleyebilirsiniz.")
+
+
+# ==========================================================
+# SEKME 2: 8 TEMEL İNDİKATÖR SAYISAL PANELİ
 # ==========================================================
 with tab_indicators:
     st.markdown("### 🔢 8 Temel Teknik Göstergenin Sayısal Değerleri")
@@ -77,7 +270,7 @@ with tab_indicators:
     with col_i1:
         ind_coin_raw = st.text_input("🪙 Coin Ara / Gir", value="BTC", placeholder="Örn: BTC, ETH, SOL, PEPE, SUI...", key="ind_coin_input")
     with col_i2:
-        ind_tf = st.selectbox("Zaman Dilimi", SUPPORTED_TIMEFRAMES, index=4, key="ind_tf_select") # 4h
+        ind_tf = st.selectbox("Zaman Dilimi", SUPPORTED_TIMEFRAMES, index=4, key="ind_tf_select")
     with col_i3:
         ind_limit = st.slider("İncelenecek Mum Sayısı", min_value=50, max_value=1000, value=250, step=50, key="ind_limit_slider")
     with col_i4:
@@ -100,17 +293,12 @@ with tab_indicators:
 
     if not df_ind.empty and len(df_ind) >= 14:
         latest = df_ind.iloc[-1]
-        prev = df_ind.iloc[-2] if len(df_ind) > 1 else latest
 
         st.markdown("---")
         st.subheader(f"📌 {ind_symbol} [{ind_tf.upper()}] — En Güncel Sayısal Değerler")
         st.caption(f"Son Mum Zamanı: `{latest['timestamp']}` | Kapanış: `{latest['close']} USDT`")
 
-        # -------------------------------------------------------------
-        # 8 İNDİKATÖRÜN SAYISAL KARTLARI
-        # -------------------------------------------------------------
         r1_c1, r1_c2, r1_c3, r1_c4 = st.columns(4)
-
         with r1_c1:
             st.markdown("#### 1. SMA Değerleri")
             st.markdown(f"""
@@ -163,7 +351,6 @@ with tab_indicators:
             """, unsafe_allow_html=True)
 
         r2_c1, r2_c2, r2_c3, r2_c4 = st.columns(4)
-
         with r2_c1:
             st.markdown("#### 5. Bollinger Bands")
             st.markdown(f"""
@@ -207,86 +394,14 @@ with tab_indicators:
             <div class="metric-container">
                 <div class="metric-title">ADX Değeri</div>
                 <div class="metric-val">{latest.get('ADX', 0):.2f}</div>
-                <div class="metric-title" style="margin-top:6px;">+DI (Alıcı Gücü) / -DI (Satıcı Gücü)</div>
+                <div class="metric-title" style="margin-top:6px;">+DI / -DI Yön Değerleri</div>
                 <div class="metric-val">{latest.get('ADX_Pos_DI', 0):.1f} / {latest.get('ADX_Neg_DI', 0):.1f}</div>
             </div>
             """, unsafe_allow_html=True)
 
-        st.markdown("---")
-
-        # -------------------------------------------------------------
-        # ÇOKLU KATMANLI PLOTLY İNDİKATÖR GRAFİKLERİ
-        # -------------------------------------------------------------
-        fig_multi = make_subplots(
-            rows=4, cols=1,
-            shared_xaxes=True,
-            vertical_spacing=0.03,
-            subplot_titles=(
-                f"{ind_symbol} Fiyat, SMA, EMA & Bollinger Bantları",
-                "RSI (14) & Stochastic RSI (K, D)",
-                "MACD (12, 26, 9)",
-                "ADX Trend Gücü & ATR Volatilite"
-            ),
-            row_heights=[0.45, 0.20, 0.20, 0.15]
-        )
-
-        # 1. Panel: Fiyat + SMA + EMA + Bollinger
-        fig_multi.add_trace(go.Candlestick(
-            x=df_ind['timestamp'],
-            open=df_ind['open'], high=df_ind['high'], low=df_ind['low'], close=df_ind['close'],
-            name='Fiyat', increasing_line_color='#00e676', decreasing_line_color='#ff5252'
-        ), row=1, col=1)
-
-        fig_multi.add_trace(go.Scatter(x=df_ind['timestamp'], y=df_ind['SMA_20'], mode='lines', name='SMA 20', line=dict(color='#ffeb3b', width=1.2)), row=1, col=1)
-        fig_multi.add_trace(go.Scatter(x=df_ind['timestamp'], y=df_ind['EMA_50'], mode='lines', name='EMA 50', line=dict(color='#ff9800', width=1.5)), row=1, col=1)
-        fig_multi.add_trace(go.Scatter(x=df_ind['timestamp'], y=df_ind['EMA_200'], mode='lines', name='EMA 200', line=dict(color='#29b6f6', width=2)), row=1, col=1)
-        fig_multi.add_trace(go.Scatter(x=df_ind['timestamp'], y=df_ind['BB_High'], mode='lines', name='BB Üst', line=dict(color='rgba(255, 255, 255, 0.25)', width=1, dash='dot')), row=1, col=1)
-        fig_multi.add_trace(go.Scatter(x=df_ind['timestamp'], y=df_ind['BB_Low'], mode='lines', name='BB Alt', line=dict(color='rgba(255, 255, 255, 0.25)', width=1, dash='dot'), fill='tonexty', fillcolor='rgba(255, 255, 255, 0.02)'), row=1, col=1)
-
-        # 2. Panel: RSI + StochRSI
-        fig_multi.add_trace(go.Scatter(x=df_ind['timestamp'], y=df_ind['RSI'], mode='lines', name='RSI (14)', line=dict(color='#ab47bc', width=2)), row=2, col=1)
-        fig_multi.add_trace(go.Scatter(x=df_ind['timestamp'], y=df_ind['Stoch_K'], mode='lines', name='Stoch %K', line=dict(color='#00e5ff', width=1.2, dash='dash')), row=2, col=1)
-        fig_multi.add_trace(go.Scatter(x=df_ind['timestamp'], y=df_ind['Stoch_D'], mode='lines', name='Stoch %D', line=dict(color='#ff4081', width=1.2, dash='dash')), row=2, col=1)
-        fig_multi.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-        fig_multi.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-
-        # 3. Panel: MACD
-        fig_multi.add_trace(go.Scatter(x=df_ind['timestamp'], y=df_ind['MACD'], mode='lines', name='MACD', line=dict(color='#00e676', width=1.5)), row=3, col=1)
-        fig_multi.add_trace(go.Scatter(x=df_ind['timestamp'], y=df_ind['MACD_Signal'], mode='lines', name='Sinyal', line=dict(color='#ff5252', width=1.5)), row=3, col=1)
-        hist_colors = ['#00e676' if val >= 0 else '#ff5252' for val in df_ind['MACD_Hist']]
-        fig_multi.add_trace(go.Bar(x=df_ind['timestamp'], y=df_ind['MACD_Hist'], name='Histogram', marker_color=hist_colors), row=3, col=1)
-
-        # 4. Panel: ADX
-        fig_multi.add_trace(go.Scatter(x=df_ind['timestamp'], y=df_ind['ADX'], mode='lines', name='ADX (14)', line=dict(color='#ffffff', width=2)), row=4, col=1)
-        fig_multi.add_trace(go.Scatter(x=df_ind['timestamp'], y=df_ind['ADX_Pos_DI'], mode='lines', name='+DI (Alıcı)', line=dict(color='#00e676', width=1.2)), row=4, col=1)
-        fig_multi.add_trace(go.Scatter(x=df_ind['timestamp'], y=df_ind['ADX_Neg_DI'], mode='lines', name='-DI (Satıcı)', line=dict(color='#ff5252', width=1.2)), row=4, col=1)
-        fig_multi.add_hline(y=25, line_dash="dash", line_color="yellow", row=4, col=1)
-
-        fig_multi.update_layout(
-            template="plotly_dark",
-            height=900,
-            xaxis_rangeslider_visible=False,
-            margin=dict(l=20, r=20, t=40, b=20),
-            hovermode="x unified"
-        )
-        st.plotly_chart(fig_multi, use_container_width=True)
-
-        # Sayısal Veri Tablosu
-        with st.expander("📄 Tüm Hesaplanmış Sayısal İndikatör Tablosu (Son 50 Mum)", expanded=False):
-            st.dataframe(df_ind.tail(50), use_container_width=True, hide_index=True)
-            csv_ind = df_ind.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 İndikatör Verilerini CSV Olarak İndir",
-                data=csv_ind,
-                file_name=f"{ind_symbol.replace('/', '_')}_{ind_tf}_indicators.csv",
-                mime="text/csv"
-            )
-    else:
-        st.info("👈 Coini ve zaman dilimini seçip **'İndikatörleri Hesapla & Kaydet'** butonuna tıklayarak sayısal analiz sonuçlarını görüntüleyebilirsiniz.")
-
 
 # ==========================================================
-# SEKME 2: OHLCV VERİ TOPLAMA
+# SEKME 3: OHLCV VERİ TOPLAMA
 # ==========================================================
 with tab_ohlcv:
     st.markdown("### 📦 Çoklu Zaman Dilimli OHLCV Veri Toplama")
@@ -317,7 +432,7 @@ with tab_ohlcv:
 
 
 # ==========================================================
-# SEKME 3: VERİTABANI ARŞİVİ & DURUM
+# SEKME 4: VERİTABANI ARŞİVİ & DURUM
 # ==========================================================
 with tab_storage:
     st.markdown("### 💾 SQLite Veritabanı Saklama Özeti")

@@ -11,6 +11,7 @@ if sys.platform == "win32":
 from config.settings import SUPPORTED_TIMEFRAMES, DEFAULT_TIMEFRAME, DEFAULT_CANDLE_LIMIT
 from services.market_data_service import MarketDataService
 from services.indicator_service import IndicatorService
+from core.structure import PriceStructureAnalyzer
 
 def handle_collect(service: MarketDataService, symbol: str, timeframe: str, limit: int):
     print(f"📥 Veri Toplama Başlatılıyor: {symbol} [{timeframe}] (Limit: {limit})...")
@@ -114,10 +115,44 @@ def handle_indicators(indicator_service: IndicatorService, symbol: str, timefram
     print("=" * 65)
     print("💾 Tüm sayısal indikatör kayıtları SQLite veritabanına kaydedildi.")
 
+def handle_structure(market_service: MarketDataService, symbol: str, timeframe: str, candles: int):
+    print("=" * 65)
+    print(f"🏛️ FİYAT YAPISI (MARKET STRUCTURE) RAPORU: {symbol} [{timeframe.upper()}]")
+    print("=" * 65)
+
+    df = market_service.get_candles(symbol=symbol, timeframe=timeframe, limit=candles, auto_fetch=True)
+    if df.empty or len(df) < 20:
+        print(f"❌ {symbol} [{timeframe}] için yeterli veri alınamadı.")
+        return
+
+    res = PriceStructureAnalyzer.analyze(df, symbol=symbol, timeframe=timeframe)
+
+    print(f"📢 DURUM BİLDİRİMİ : {res.statement}")
+    print(f"🧭 TREND DURUMU    : {res.trend_badge} ({res.trend_name_tr})")
+    print(f"💰 ANLIK FİYAT     : {res.current_price:,.2f} USDT")
+    print("-" * 65)
+    print("🧱 DESTEK VE DİRENÇ SEVİYELERİ:")
+    print(f"   • En Yakın Destek  : {res.nearest_support:,.2f} USDT (%{res.dist_to_support_pct} aşağıda)" if res.nearest_support else "   • En Yakın Destek  : -")
+    print(f"   • En Yakın Direnç  : {res.nearest_resistance:,.2f} USDT (%{res.dist_to_resistance_pct} yukarıda)" if res.nearest_resistance else "   • En Yakın Direnç  : -")
+    print("-" * 65)
+    print("📍 SON FİYAT YAPISI NOKTALARI (Pivots):")
+    for pt in res.points[-6:]:
+        pt_badge = "🔴 Tepe" if pt.is_high else "🟢 Dip"
+        print(f"   • {pt_badge} [{pt.point_type.ljust(4)}] : {pt.price:,.2f} USDT ({pt.candles_ago} mum önce)")
+    print("-" * 65)
+    if res.is_breakout:
+        print(f"⚡ {res.breakout_details}")
+    if res.is_breakdown:
+        print(f"⚡ {res.breakout_details}")
+    print("📝 ANALİZ NOTLARI:")
+    for note in res.summary_notes:
+        print(f"   • {note}")
+    print("=" * 65)
+
 def main():
-    parser = argparse.ArgumentParser(description="Kripto Fiyat Verisi ve İndikatör Yönetim CLI")
-    parser.add_argument("--action", choices=["collect", "collect-all", "backfill", "status", "show", "indicators"], default="indicators",
-                        help="İşlem türü: collect, collect-all, backfill, status, show, indicators")
+    parser = argparse.ArgumentParser(description="Kripto Fiyat Verisi, İndikatör ve Fiyat Yapısı CLI")
+    parser.add_argument("--action", choices=["collect", "collect-all", "backfill", "status", "show", "indicators", "structure"], default="structure",
+                        help="İşlem türü: collect, collect-all, backfill, status, show, indicators, structure")
     parser.add_argument("--symbol", default="BTC/USDT", help="Coin sembolü (Örn: BTC, ETH, SOL, PEPE, AVAX)")
     parser.add_argument("--timeframe", default=DEFAULT_TIMEFRAME, choices=SUPPORTED_TIMEFRAMES, help="Zaman dilimi (1m, 5m, 15m, 1h, 4h, 1d)")
     parser.add_argument("--candles", type=int, default=DEFAULT_CANDLE_LIMIT, help="Mum sayısı")
@@ -140,6 +175,8 @@ def main():
         handle_show(market_service, args.symbol, args.timeframe, args.limit)
     elif args.action == "indicators":
         handle_indicators(indicator_service, args.symbol, args.timeframe, args.candles)
+    elif args.action == "structure":
+        handle_structure(market_service, args.symbol, args.timeframe, args.candles)
 
 if __name__ == "__main__":
     main()
