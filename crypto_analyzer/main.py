@@ -11,7 +11,9 @@ if sys.platform == "win32":
 from config.settings import SUPPORTED_TIMEFRAMES, DEFAULT_TIMEFRAME, DEFAULT_CANDLE_LIMIT
 from services.market_data_service import MarketDataService
 from services.indicator_service import IndicatorService
+from services.microstructure_service import MicrostructureService
 from core.structure import PriceStructureAnalyzer
+from core.microstructure import MarketMicrostructureAnalyzer
 
 def handle_collect(service: MarketDataService, symbol: str, timeframe: str, limit: int):
     print(f"📥 Veri Toplama Başlatılıyor: {symbol} [{timeframe}] (Limit: {limit})...")
@@ -129,16 +131,16 @@ def handle_structure(market_service: MarketDataService, symbol: str, timeframe: 
 
     print(f"📢 DURUM BİLDİRİMİ : {res.statement}")
     print(f"🧭 TREND DURUMU    : {res.trend_badge} ({res.trend_name_tr})")
-    print(f"💰 ANLIK FİYAT     : {res.current_price:,.2f} USDT")
+    print(f"💰 ANLIK FİYAT     : {MarketMicrostructureAnalyzer.format_price(res.current_price)} USDT")
     print("-" * 65)
     print("🧱 DESTEK VE DİRENÇ SEVİYELERİ:")
-    print(f"   • En Yakın Destek  : {res.nearest_support:,.2f} USDT (%{res.dist_to_support_pct} aşağıda)" if res.nearest_support else "   • En Yakın Destek  : -")
-    print(f"   • En Yakın Direnç  : {res.nearest_resistance:,.2f} USDT (%{res.dist_to_resistance_pct} yukarıda)" if res.nearest_resistance else "   • En Yakın Direnç  : -")
+    print(f"   • En Yakın Destek  : {MarketMicrostructureAnalyzer.format_price(res.nearest_support)} USDT (%{res.dist_to_support_pct} aşağıda)" if res.nearest_support else "   • En Yakın Destek  : -")
+    print(f"   • En Yakın Direnç  : {MarketMicrostructureAnalyzer.format_price(res.nearest_resistance)} USDT (%{res.dist_to_resistance_pct} yukarıda)" if res.nearest_resistance else "   • En Yakın Direnç  : -")
     print("-" * 65)
     print("📍 SON FİYAT YAPISI NOKTALARI (Pivots):")
     for pt in res.points[-6:]:
         pt_badge = "🔴 Tepe" if pt.is_high else "🟢 Dip"
-        print(f"   • {pt_badge} [{pt.point_type.ljust(4)}] : {pt.price:,.2f} USDT ({pt.candles_ago} mum önce)")
+        print(f"   • {pt_badge} [{pt.point_type.ljust(4)}] : {MarketMicrostructureAnalyzer.format_price(pt.price)} USDT ({pt.candles_ago} mum önce)")
     print("-" * 65)
     if res.is_breakout:
         print(f"⚡ {res.breakout_details}")
@@ -149,10 +151,50 @@ def handle_structure(market_service: MarketDataService, symbol: str, timeframe: 
         print(f"   • {note}")
     print("=" * 65)
 
+def handle_microstructure(micro_service: MicrostructureService, symbol: str):
+    print("=" * 68)
+    print(f"🌊 ORDER BOOK & PİYASA MİKRO YAPISI RAPORU: {symbol}")
+    print("=" * 68)
+
+    res = micro_service.analyze_microstructure(symbol=symbol)
+    if res.mid_price is None or res.mid_price <= 0:
+        print(f"❌ {symbol} için emir defteri verileri alınamadı.")
+        return
+
+    fmt = MarketMicrostructureAnalyzer.format_price
+    print(f"📢 MİKRO YAPI RAPORU: {res.pressure_badge}")
+    print(f"💬 DURUM ÖZETİ      : {res.statement}")
+    print("-" * 68)
+    print(f"💰 Anlık Mid Price  : {fmt(res.mid_price)} USDT")
+    print(f"💵 En İyi Alış/Satış: Bid: {fmt(res.best_bid)} | Ask: {fmt(res.best_ask)}")
+    print(f"📏 Bid/Ask Spread   : {fmt(res.spread)} USDT (%%{res.spread_pct:.4f} / {res.spread_bps:.2f} bps)")
+    print("-" * 68)
+    print(f"⚖️ ORDER BOOK IMBALANCE (OBI): %{res.obi_pct:+.2f} (Skor: {res.obi:+.4f})")
+    print(f"   • Toplam Alış Tahtası : {res.bid_vol_total:,.2f} adet ({res.bid_usd_total:,.0f} $)")
+    print(f"   • Toplam Satış Tahtası: {res.ask_vol_total:,.2f} adet ({res.ask_usd_total:,.0f} $)")
+    print("-" * 68)
+    print("🧱 LİKİDİTE DERİNLİĞİ TAMPONLARI (Depth Buffers):")
+    print(f"   • ±%0.5 Derinlik : Alış: {res.depth_buffers.depth_05_pct_bid:,.0f} $ | Satış: {res.depth_buffers.depth_05_pct_ask:,.0f} $ (Oran: {res.depth_buffers.ratio_05_pct:.2f}x)")
+    print(f"   • ±%1.0 Derinlik : Alış: {res.depth_buffers.depth_10_pct_bid:,.0f} $ | Satış: {res.depth_buffers.depth_10_pct_ask:,.0f} $ (Oran: {res.depth_buffers.ratio_10_pct:.2f}x)")
+    print(f"   • ±%2.0 Derinlik : Alış: {res.depth_buffers.depth_20_pct_bid:,.0f} $ | Satış: {res.depth_buffers.depth_20_pct_ask:,.0f} $")
+    print("-" * 68)
+    print("⚡ TAKER TRADE AKIŞI & CVD:")
+    print(f"   • Trade Imbalance: %{res.trade_imbalance * 100:+.2f} ({res.taker_buy_count} Alış vs {res.taker_sell_count} Satış)")
+    print(f"   • Taker Hacmi    : Alış: {res.taker_buy_usd:,.0f} $ | Satış: {res.taker_sell_usd:,.0f} $")
+    print(f"   • Kümülatif Delta: {res.cvd_current:+.4f} (CVD)")
+    print(f"   • VWAP / TWAP    : VWAP: {fmt(res.vwap)} USDT | TWAP: {fmt(res.twap)} USDT")
+    print("-" * 68)
+    print("🎯 SLIPPAGE (KAYMA) & PİYASA ETKİSİ SİMÜLASYONU:")
+    print(f"   {'Emir Boyutu':<12} | {'Yön':<12} | {'Ort. Fiyat':<16} | {'Kayma (%)':<10} | {'Fark ($)':<12} | {'Etki Seviyesi'}")
+    print("   " + "-" * 82)
+    for q in res.slippage_matrix:
+        print(f"   {f'${q.order_size_usd:,.0f}':<12} | {q.side:<12} | {f'{fmt(q.avg_exec_price)}':<16} | {f'%{q.slippage_pct:.3f}':<10} | {f'${fmt(q.slippage_usd)}':<12} | {q.impact_level}")
+    print("=" * 68)
+
 def main():
-    parser = argparse.ArgumentParser(description="Kripto Fiyat Verisi, İndikatör ve Fiyat Yapısı CLI")
-    parser.add_argument("--action", choices=["collect", "collect-all", "backfill", "status", "show", "indicators", "structure"], default="structure",
-                        help="İşlem türü: collect, collect-all, backfill, status, show, indicators, structure")
+    parser = argparse.ArgumentParser(description="Kripto Analiz CLI (OHLCV, İndikatör, Fiyat Yapısı, Mikro Yapı)")
+    parser.add_argument("--action", choices=["collect", "collect-all", "backfill", "status", "show", "indicators", "structure", "microstructure"], default="microstructure",
+                        help="İşlem türü: collect, collect-all, backfill, status, show, indicators, structure, microstructure")
     parser.add_argument("--symbol", default="BTC/USDT", help="Coin sembolü (Örn: BTC, ETH, SOL, PEPE, AVAX)")
     parser.add_argument("--timeframe", default=DEFAULT_TIMEFRAME, choices=SUPPORTED_TIMEFRAMES, help="Zaman dilimi (1m, 5m, 15m, 1h, 4h, 1d)")
     parser.add_argument("--candles", type=int, default=DEFAULT_CANDLE_LIMIT, help="Mum sayısı")
@@ -162,6 +204,7 @@ def main():
     args = parser.parse_args()
     market_service = MarketDataService(exchange_id=args.exchange)
     indicator_service = IndicatorService(exchange_id=args.exchange)
+    micro_service = MicrostructureService(exchange_id=args.exchange)
 
     if args.action == "collect":
         handle_collect(market_service, args.symbol, args.timeframe, args.candles)
@@ -177,6 +220,8 @@ def main():
         handle_indicators(indicator_service, args.symbol, args.timeframe, args.candles)
     elif args.action == "structure":
         handle_structure(market_service, args.symbol, args.timeframe, args.candles)
+    elif args.action == "microstructure":
+        handle_microstructure(micro_service, args.symbol)
 
 if __name__ == "__main__":
     main()

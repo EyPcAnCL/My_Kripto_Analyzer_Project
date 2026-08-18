@@ -2,7 +2,7 @@ import ccxt
 import pandas as pd
 import logging
 import time
-from typing import Optional
+from typing import Optional, Dict, List
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -93,14 +93,12 @@ class ExchangeService:
             all_ohlcv = []
             candles_per_req = 500
             
-            # İlk partiyi çek
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=candles_per_req)
             if not ohlcv:
                 return pd.DataFrame()
             
             all_ohlcv.extend(ohlcv)
             
-            # Geriye doğru sayfalama yaparak eski mumları çek
             while len(all_ohlcv) < total_candles:
                 oldest_ts = all_ohlcv[0][0]
                 tf_ms = self.exchange.parse_timeframe(timeframe) * 1000
@@ -128,3 +126,39 @@ class ExchangeService:
         except Exception as e:
             logger.error(f"Geçmiş veri çekilirken hata oluştu ({symbol} {timeframe}): {e}")
             return self.fetch_ohlcv(symbol, timeframe=timeframe, limit=min(total_candles, 500))
+
+    def fetch_order_book(self, symbol: str, limit: int = 100) -> dict:
+        """
+        Borsadan anlık emir defterini (Order Book) çeker (Bids & Asks).
+        """
+        symbol = self.normalize_symbol(symbol)
+        try:
+            order_book = self.exchange.fetch_order_book(symbol, limit=limit)
+            return order_book
+        except Exception as e:
+            logger.error(f"Emir defteri çekilemedi ({symbol}): {e}")
+            return {'bids': [], 'asks': []}
+
+    def fetch_trades(self, symbol: str, limit: int = 100) -> list:
+        """
+        Borsadan son gerçekleşen işlem akışını (Trade Flow) çeker.
+        """
+        symbol = self.normalize_symbol(symbol)
+        try:
+            trades = self.exchange.fetch_trades(symbol, limit=limit)
+            return trades
+        except Exception as e:
+            logger.error(f"İşlem akışı (trades) çekilemedi ({symbol}): {e}")
+            return []
+
+    def fetch_ticker(self, symbol: str) -> dict:
+        """
+        24 saatlik özet ticker verilerini (VWAP, hacim vb.) çeker.
+        """
+        symbol = self.normalize_symbol(symbol)
+        try:
+            ticker = self.exchange.fetch_ticker(symbol)
+            return ticker
+        except Exception as e:
+            logger.error(f"Ticker verisi çekilemedi ({symbol}): {e}")
+            return {}
